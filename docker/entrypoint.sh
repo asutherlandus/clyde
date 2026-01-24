@@ -24,7 +24,8 @@ if [[ -n "$existing_user" ]]; then
     # Modify the existing user to use /home/claude as home
     usermod -d /home/claude "$existing_user" 2>/dev/null || true
 
-    # Execute as the existing user
+    # Execute as the existing user with proper HOME
+    export HOME=/home/claude
     exec gosu "$existing_user" "$@"
 else
     # No user with this UID exists - create claude user
@@ -47,6 +48,7 @@ else
         chown -R "$HOST_UID:$HOST_GID" /home/claude/.claude
     fi
 
-    # Execute as claude user
+    # Execute as claude user with proper HOME
+    export HOME=/home/claude
     exec gosu claude "$@"
 fi
