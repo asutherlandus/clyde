@@ -7,6 +7,21 @@ set -euo pipefail
 HOST_UID="${HOST_UID:-1000}"
 HOST_GID="${HOST_GID:-1000}"
 
+# Validate UID/GID are numeric and within valid range
+if [[ ! "$HOST_UID" =~ ^[0-9]+$ ]] || [[ "$HOST_UID" -lt 1 ]]; then
+    echo "Error: HOST_UID must be a positive integer, got '$HOST_UID'" >&2
+    exit 1
+fi
+if [[ ! "$HOST_GID" =~ ^[0-9]+$ ]] || [[ "$HOST_GID" -lt 1 ]]; then
+    echo "Error: HOST_GID must be a positive integer, got '$HOST_GID'" >&2
+    exit 1
+fi
+
+# Warn if UID is below 1000 (system user range)
+if [[ "$HOST_UID" -lt 1000 ]]; then
+    echo "Warning: HOST_UID=$HOST_UID is in system user range (< 1000)" >&2
+fi
+
 # Check if a user with the target UID already exists
 existing_user=$(getent passwd "$HOST_UID" | cut -d: -f1 || true)
 

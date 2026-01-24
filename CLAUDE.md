@@ -93,6 +93,38 @@ bats tests/
 3. **Resource Limits**: Default 8GB RAM, 4 CPUs; configurable via flags
 4. **Auto-build**: Script builds image on first run if missing
 
+## Security Considerations
+
+### X11/Wayland Display Forwarding
+
+Display forwarding is enabled by default to support OAuth browser flows. However, this grants the container access to the X11 server, which has security implications:
+
+- **Keylogging risk**: X11 clients can read keyboard events from other windows
+- **Screen capture**: Container could potentially capture screen content
+- **Input injection**: Container could simulate input to other applications
+
+**Mitigations:**
+- Use `--no-display` flag when browser OAuth is not needed
+- Use `CLYDE_NO_DISPLAY=1` environment variable for persistent configuration
+- Consider using Wayland with proper isolation (more secure than X11)
+- A warning is displayed when display forwarding is active
+
+### Token Storage
+
+OAuth tokens are stored in `~/.claude/profiles/` with 600 permissions. For additional security:
+- Store tokens on encrypted filesystems
+- Use separate profiles for different accounts/projects
+- Tokens are passed to containers via mounted secret files (not environment variables)
+
+### Profile Names
+
+Profile names are validated to prevent path traversal attacks. Only alphanumeric characters, dashes, and underscores are allowed.
+
+### Dependencies
+
+- `jq` is required for profile management (no fallback to insecure grep/sed parsing)
+- Dockerfile pins all package versions and base image digest for reproducibility
+
 ## Recent Changes
 
 - 001-docker-claude: Initial implementation of Docker container for Claude Code
