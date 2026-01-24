@@ -561,13 +561,21 @@ run_container() {
         docker_args+=(-v "$claude_json:/home/claude/.claude.json")
     fi
 
-    # Mount git config and SSH keys unless --no-git
+    # Mount git config and forward SSH agent unless --no-git
+    # Security: We forward SSH_AUTH_SOCK instead of mounting ~/.ssh directly
+    # This keeps private keys on the host; only the agent socket is exposed
     if [[ -z "$NO_GIT" ]]; then
         if [[ -f "$HOME/.gitconfig" ]]; then
             docker_args+=(-v "$HOME/.gitconfig:/home/claude/.gitconfig:ro")
         fi
-        if [[ -d "$HOME/.ssh" ]]; then
-            docker_args+=(-v "$HOME/.ssh:/home/claude/.ssh:ro")
+        # Forward SSH agent socket (preferred over mounting ~/.ssh)
+        if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
+            docker_args+=(-v "$SSH_AUTH_SOCK:/ssh-agent:ro")
+            docker_args+=(-e "SSH_AUTH_SOCK=/ssh-agent")
+        elif [[ -d "$HOME/.ssh" ]]; then
+            # Fallback warning: agent not available, SSH won't work in container
+            warn "SSH agent not running. Git SSH operations will not work in container."
+            warn "Start ssh-agent and add keys with: eval \$(ssh-agent) && ssh-add"
         fi
     fi
 

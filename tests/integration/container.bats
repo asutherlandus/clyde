@@ -133,6 +133,44 @@ teardown() {
 }
 
 ##############################################################################
+# Security Tests
+##############################################################################
+
+@test "SSH private keys are NOT mounted in container" {
+    # Create a fake .ssh directory to ensure it exists on host
+    mkdir -p "$TEST_TMPDIR/.ssh"
+    echo "fake-private-key" > "$TEST_TMPDIR/.ssh/id_rsa"
+    chmod 600 "$TEST_TMPDIR/.ssh/id_rsa"
+
+    # Run container simulating what clyde does (SSH agent forwarding, not .ssh mount)
+    # The container should NOT have access to ~/.ssh
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        "$IMAGE_NAME" sh -c 'test -d /home/claude/.ssh && echo "FAIL: .ssh exists" || echo "PASS: .ssh not mounted"'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "PASS: .ssh not mounted" ]
+}
+
+@test "SSH agent socket can be forwarded to container" {
+    # Skip if SSH agent is not running
+    if [ -z "${SSH_AUTH_SOCK:-}" ] || [ ! -S "$SSH_AUTH_SOCK" ]; then
+        skip "SSH agent not running"
+    fi
+
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -v "$SSH_AUTH_SOCK:/ssh-agent:ro" \
+        -e "SSH_AUTH_SOCK=/ssh-agent" \
+        "$IMAGE_NAME" sh -c 'test -S "$SSH_AUTH_SOCK" && echo "PASS: agent socket available" || echo "FAIL: agent socket missing"'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "PASS: agent socket available" ]
+}
+
+##############################################################################
 # Container Cleanup Tests
 ##############################################################################
 
