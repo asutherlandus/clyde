@@ -10,7 +10,6 @@ A Docker container for running Claude Code in an isolated environment.
 - **Container Isolation** - Run Claude Code in a sandboxed Docker environment
 - **Seamless Integration** - Mounts your project directory, git config, and forwards SSH agent automatically
 - **Resource Control** - Configurable memory and CPU limits
-- **Display Forwarding** - X11/Wayland support for OAuth browser authentication (Untested)
 
 ## Prerequisites
 
@@ -54,7 +53,7 @@ clyde
 
 On first run:
 1. Docker image will be built automatically
-2. Claude Code will prompt for authentication (browser will open if display available)
+2. Claude Code will prompt for authentication (copy the URL and open in browser)
 3. You're ready to use Claude Code in the isolated container
 
 **Tip**: To skip in-container authentication, set up a profile first:
@@ -290,9 +289,9 @@ sudo systemctl start docker
 ls -la .
 ```
 
-### OAuth browser doesn't open (headless/SSH)
+### OAuth authentication
 
-**Expected behavior**: When no display is available, Claude Code will print the OAuth URL. Copy and paste it into a browser on any machine, complete authentication, and the token will be saved.
+Claude Code will print an OAuth URL during authentication. Copy and paste it into a browser, complete authentication, and the token will be saved.
 
 ### Image build fails
 
