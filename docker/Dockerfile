@@ -10,6 +10,9 @@ ARG NODE_VERSION=20
 # Suppress apt prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Set browser wrapper for OAuth URL printing
+ENV BROWSER=/usr/local/bin/open-url
+
 # Install system packages
 # Layer 1: Base system packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,9 +33,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
 # Layer 3: Install Claude Code globally via npm
 RUN npm install -g @anthropic-ai/claude-code
 
-# Layer 4: Copy entrypoint script
+# Layer 4: Copy entrypoint and browser wrapper scripts
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY open-url.sh /usr/local/bin/open-url
+RUN chmod +x /entrypoint.sh /usr/local/bin/open-url
 
 # Working directory (will be overridden by volume mount)
 WORKDIR /workspace
