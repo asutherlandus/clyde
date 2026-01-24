@@ -19,9 +19,13 @@ PROFILE="${CLYDE_PROFILE:-}"
 # Flags
 FORCE_BUILD=false
 NO_GIT="${CLYDE_NO_GIT:-}"
+NO_DISPLAY="${CLYDE_NO_DISPLAY:-}"
 
 # Arguments to pass to Claude Code
 CLAUDE_ARGS=()
+
+# Cleanup tracking
+CLEANUP_FILES=()
 
 ##############################################################################
 # Functions
@@ -38,6 +42,7 @@ Options:
     --cpus <NUM>           Container CPU limit (default: 4)
     --build                Force rebuild of the Docker image
     --no-git               Skip mounting ~/.gitconfig and ~/.ssh
+    --no-display           Disable X11/Wayland display forwarding
     -h, --help             Display this help message
     -v, --version          Display version information
 
@@ -52,6 +57,7 @@ Environment Variables:
     CLYDE_MEMORY           Default memory limit (overridden by --memory)
     CLYDE_CPUS             Default CPU limit (overridden by --cpus)
     CLYDE_NO_GIT           If set to 1, skip git/SSH mounts
+    CLYDE_NO_DISPLAY       If set to 1, disable display forwarding
     CLYDE_IMAGE            Custom image name (default: clyde:local)
     CLYDE_PROFILE          Default profile to use (overridden by --profile)
 
@@ -83,14 +89,45 @@ info() {
     echo "$1" >&2
 }
 
+warn() {
+    echo "Warning: $1" >&2
+}
+
+# Cleanup function for temporary files
+cleanup() {
+    for file in "${CLEANUP_FILES[@]}"; do
+        if [[ -f "$file" ]]; then
+            # Use shred if available for secure deletion
+            if command -v shred &>/dev/null; then
+                shred -u "$file" 2>/dev/null || rm -f "$file"
+            else
+                rm -f "$file"
+            fi
+        fi
+    done
+}
+trap cleanup EXIT
+
 ##############################################################################
 # Profile Management
 ##############################################################################
 
+# Validate profile name to prevent path traversal attacks
+validate_profile_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        error "Invalid profile name '$name'. Use only alphanumeric characters, dash, and underscore." 6
+    fi
+    if [[ ${#name} -gt 64 ]]; then
+        error "Profile name too long (max 64 characters)." 6
+    fi
+}
+
 ensure_profiles_dir() {
     if [[ ! -d "$PROFILES_DIR" ]]; then
-        mkdir -p "$PROFILES_DIR"
-        chmod 700 "$PROFILES_DIR"
+        # Create parent directories first, then profiles dir with secure permissions
+        mkdir -p "$(dirname "$PROFILES_DIR")"
+        mkdir -m 700 "$PROFILES_DIR"
     fi
 }
 
@@ -105,6 +142,7 @@ get_default_profile() {
 
 set_default_profile() {
     local name="$1"
+    validate_profile_name "$name"
     local profile_file="$PROFILES_DIR/${name}.json"
 
     if [[ ! -f "$profile_file" ]]; then
@@ -118,6 +156,7 @@ set_default_profile() {
 
 get_profile_token() {
     local name="$1"
+    validate_profile_name "$name"
     local profile_file="$PROFILES_DIR/${name}.json"
 
     if [[ ! -f "$profile_file" ]]; then
@@ -125,11 +164,10 @@ get_profile_token() {
     fi
 
     if ! command -v jq &>/dev/null; then
-        # Fallback: use grep/sed if jq not available
-        grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' "$profile_file" | sed 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
-    else
-        jq -r '.token' "$profile_file"
+        error "jq is required for profile management. Install with: apt install jq" 1
     fi
+
+    jq -r '.token' "$profile_file"
 }
 
 list_profiles() {
@@ -166,6 +204,8 @@ save_profile() {
     local name="$1"
     local token="$2"
     local description="${3:-}"
+
+    validate_profile_name "$name"
     local profile_file="$PROFILES_DIR/${name}.json"
 
     ensure_profiles_dir
@@ -183,14 +223,24 @@ save_profile() {
 EOF
     chmod 600 "$profile_file"
     info "Profile '$name' saved."
+
+    # Clear sensitive variables from memory
+    token=""
+    description=""
 }
 
 add_profile() {
     local name="$1"
+
+    validate_profile_name "$name"
     local profile_file="$PROFILES_DIR/${name}.json"
 
     if [[ -f "$profile_file" ]]; then
         error "Profile '$name' already exists. Delete it first with 'clyde --delete-profile $name'" 6
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        error "jq is required for profile management. Install with: apt install jq" 1
     fi
 
     ensure_profiles_dir
@@ -205,7 +255,7 @@ add_profile() {
 
     # Check if we can extract from existing credentials
     local credentials_file="$HOME/.claude/.credentials.json"
-    if [[ -f "$credentials_file" ]] && command -v jq &>/dev/null; then
+    if [[ -f "$credentials_file" ]]; then
         local existing_token
         existing_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$credentials_file" 2>/dev/null || true)
         if [[ -n "$existing_token" ]]; then
@@ -214,6 +264,8 @@ add_profile() {
             if [[ "${use_existing:-Y}" =~ ^[Yy]$ ]]; then
                 read -rp "Description (optional): " description
                 save_profile "$name" "$existing_token" "$description"
+                # Clear token from memory
+                existing_token=""
 
                 # Set as default if it's the first profile
                 if [[ -z "$(get_default_profile)" ]]; then
@@ -221,6 +273,8 @@ add_profile() {
                 fi
                 return 0
             fi
+            # Clear token from memory even if not used
+            existing_token=""
         fi
     fi
 
@@ -234,6 +288,9 @@ add_profile() {
     read -rp "Description (optional): " description
 
     save_profile "$name" "$token" "$description"
+    # Clear token from memory
+    token=""
+    description=""
 
     # Set as default if it's the first profile
     if [[ -z "$(get_default_profile)" ]]; then
@@ -243,6 +300,8 @@ add_profile() {
 
 delete_profile() {
     local name="$1"
+
+    validate_profile_name "$name"
     local profile_file="$PROFILES_DIR/${name}.json"
 
     if [[ ! -f "$profile_file" ]]; then
@@ -255,7 +314,12 @@ delete_profile() {
         return 0
     fi
 
-    rm "$profile_file"
+    # Use shred for secure deletion if available
+    if command -v shred &>/dev/null; then
+        shred -u "$profile_file" 2>/dev/null || rm -f "$profile_file"
+    else
+        rm -f "$profile_file"
+    fi
     info "Profile '$name' deleted."
 
     # Clear default if this was the default profile
@@ -270,6 +334,20 @@ delete_profile() {
 ##############################################################################
 # Validation
 ##############################################################################
+
+validate_memory_limit() {
+    local value="$1"
+    if [[ ! "$value" =~ ^[0-9]+[bkmgBKMG]?$ ]]; then
+        error "Invalid memory limit '$value'. Use format like 8g, 512m, 1024k." 4
+    fi
+}
+
+validate_cpu_limit() {
+    local value="$1"
+    if [[ ! "$value" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        error "Invalid CPU limit '$value'. Use a number like 4 or 2.5." 4
+    fi
+}
 
 check_docker() {
     if ! docker info &>/dev/null; then
@@ -339,6 +417,7 @@ parse_args() {
                 if [[ -z "${2:-}" ]]; then
                     error "Option --memory requires a value" 4
                 fi
+                validate_memory_limit "$2"
                 MEMORY_LIMIT="$2"
                 shift 2
                 ;;
@@ -346,6 +425,7 @@ parse_args() {
                 if [[ -z "${2:-}" ]]; then
                     error "Option --cpus requires a value" 4
                 fi
+                validate_cpu_limit "$2"
                 CPU_LIMIT="$2"
                 shift 2
                 ;;
@@ -357,10 +437,15 @@ parse_args() {
                 NO_GIT=1
                 shift
                 ;;
+            --no-display)
+                NO_DISPLAY=1
+                shift
+                ;;
             -P|--profile)
                 if [[ -z "${2:-}" ]]; then
                     error "Option --profile requires a name" 4
                 fi
+                validate_profile_name "$2"
                 PROFILE="$2"
                 shift 2
                 ;;
@@ -428,7 +513,8 @@ run_container() {
     docker_args+=(-e "HOST_UID=$(id -u)")
     docker_args+=(-e "HOST_GID=$(id -g)")
 
-    # Profile-based token authentication
+    # Profile-based token authentication via mounted secret file
+    # (Avoids exposing token in docker inspect or /proc/environ)
     local active_profile="$PROFILE"
     if [[ -z "$active_profile" ]]; then
         active_profile=$(get_default_profile)
@@ -438,7 +524,20 @@ run_container() {
         local token
         token=$(get_profile_token "$active_profile")
         if [[ -n "$token" ]]; then
-            docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$token")
+            # Create secure temp file for token
+            local token_file
+            token_file=$(mktemp)
+            chmod 600 "$token_file"
+            echo -n "$token" > "$token_file"
+            # Clear token from memory
+            token=""
+
+            # Track for cleanup
+            CLEANUP_FILES+=("$token_file")
+
+            # Mount as read-only secret
+            docker_args+=(-v "$token_file:/run/secrets/oauth_token:ro")
+            docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN_FILE=/run/secrets/oauth_token")
             info "Using profile: $active_profile"
         fi
     fi
@@ -472,21 +571,39 @@ run_container() {
         fi
     fi
 
-    # X11 display forwarding (if available)
-    if [[ -n "${DISPLAY:-}" ]]; then
-        docker_args+=(-e "DISPLAY=$DISPLAY")
-        if [[ -d /tmp/.X11-unix ]]; then
-            docker_args+=(-v /tmp/.X11-unix:/tmp/.X11-unix:ro)
-        fi
-    fi
+    # X11/Wayland display forwarding (unless --no-display)
+    if [[ -z "$NO_DISPLAY" ]]; then
+        local display_forwarded=false
 
-    # Wayland display forwarding (if available)
-    if [[ -n "${WAYLAND_DISPLAY:-}" ]] && [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
-        docker_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
-        local wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-        if [[ -S "$wayland_socket" ]]; then
-            docker_args+=(-v "$wayland_socket:$wayland_socket:ro")
-            docker_args+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+        # X11 display forwarding (if available)
+        if [[ -n "${DISPLAY:-}" ]]; then
+            # Validate DISPLAY format
+            if [[ ! "$DISPLAY" =~ ^:[0-9]+(\.[0-9]+)?$ ]] && [[ ! "$DISPLAY" =~ ^[a-zA-Z0-9._-]+:[0-9]+(\.[0-9]+)?$ ]]; then
+                warn "DISPLAY value '$DISPLAY' has unexpected format, skipping X11 forwarding."
+            else
+                docker_args+=(-e "DISPLAY=$DISPLAY")
+                if [[ -d /tmp/.X11-unix ]]; then
+                    docker_args+=(-v /tmp/.X11-unix:/tmp/.X11-unix:ro)
+                    display_forwarded=true
+                fi
+            fi
+        fi
+
+        # Wayland display forwarding (if available)
+        if [[ -n "${WAYLAND_DISPLAY:-}" ]] && [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+            docker_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+            local wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+            if [[ -S "$wayland_socket" ]]; then
+                docker_args+=(-v "$wayland_socket:$wayland_socket:ro")
+                docker_args+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+                display_forwarded=true
+            fi
+        fi
+
+        # Security warning when display is forwarded
+        if [[ "$display_forwarded" == true ]]; then
+            warn "Display forwarding enabled. Container can access X11/Wayland (potential keylogging risk)."
+            warn "Use --no-display to disable if not needed for OAuth browser flow."
         fi
     fi
 
