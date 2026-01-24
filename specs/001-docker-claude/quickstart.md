@@ -1,8 +1,4 @@
-![Clyde](clyde_banner.png)
-
-# Clyde
-
-A Docker container for running Claude Code in an isolated environment.
+# Quickstart: Clyde - Docker Container for Claude Code
 
 ## Prerequisites
 
@@ -179,7 +175,3 @@ docker rmi clyde:local
 - **Read-only mounts**: Your SSH keys and git config are mounted read-only
 - **Non-root**: Container runs as your user (not root) for proper file permissions
 - **Resource limits**: Default 8GB RAM / 4 CPU prevents runaway processes
-
-## License
-
-See [LICENSE](LICENSE) for details.

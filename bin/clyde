@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Clyde - Docker Container for Claude Code
+# Launches Claude Code in an isolated container with the current directory mounted
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE_NAME="${CLYDE_IMAGE:-clyde:local}"
+
+# Default resource limits (can be overridden via environment or flags)
+MEMORY_LIMIT="${CLYDE_MEMORY:-8g}"
+CPU_LIMIT="${CLYDE_CPUS:-4}"
+
+# Flags
+FORCE_BUILD=false
+NO_GIT="${CLYDE_NO_GIT:-}"
+
+# Arguments to pass to Claude Code
+CLAUDE_ARGS=()
+
+##############################################################################
+# Functions
+##############################################################################
+
+usage() {
+    cat <<EOF
+Usage: clyde [OPTIONS] [-- CLAUDE_ARGS...]
+
+Launch Claude Code in an isolated Docker container with the current directory mounted.
+
+Options:
+    --memory <SIZE>    Container memory limit (default: 8g)
+    --cpus <NUM>       Container CPU limit (default: 4)
+    --build            Force rebuild of the Docker image
+    --no-git           Skip mounting ~/.gitconfig and ~/.ssh
+    -h, --help         Display this help message
+    -v, --version      Display version information
+
+Environment Variables:
+    CLYDE_MEMORY       Default memory limit (overridden by --memory)
+    CLYDE_CPUS         Default CPU limit (overridden by --cpus)
+    CLYDE_NO_GIT       If set to 1, skip git/SSH mounts
+    CLYDE_IMAGE        Custom image name (default: clyde:local)
+
+Examples:
+    clyde                           Launch in current directory
+    clyde --memory 16g --cpus 8     Custom resource limits
+    clyde --build                   Force rebuild the image
+    clyde -- --resume               Pass --resume to Claude Code
+
+EOF
+}
+
+version() {
+    echo "clyde version $VERSION"
+}
+
+error() {
+    echo "Error: $1" >&2
+    exit "${2:-1}"
+}
+
+info() {
+    echo "$1" >&2
+}
+
+##############################################################################
+# Validation
+##############################################################################
+
+check_docker() {
+    if ! docker info &>/dev/null; then
+        cat >&2 <<EOF
+Error: Docker is not running or not installed.
+Please start Docker and try again.
+EOF
+        exit 2
+    fi
+}
+
+check_working_directory() {
+    if [[ "$PWD" == "/" ]]; then
+        cat >&2 <<EOF
+Error: Cannot run clyde from root filesystem (/).
+Please change to a project directory first.
+EOF
+        exit 5
+    fi
+}
+
+##############################################################################
+# Image Management
+##############################################################################
+
+build_image() {
+    local docker_dir="$SCRIPT_DIR/../docker"
+
+    if [[ ! -d "$docker_dir" ]]; then
+        error "Docker directory not found at $docker_dir" 3
+    fi
+
+    info "Building Clyde image..."
+    if ! docker build -t "$IMAGE_NAME" "$docker_dir"; then
+        cat >&2 <<EOF
+Error: Failed to build Clyde image.
+Check the build output above for details.
+EOF
+        exit 3
+    fi
+    info "Image built successfully."
+}
+
+ensure_image() {
+    if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+        info "Clyde image not found. Building (first run)..."
+        build_image
+    fi
+}
+
+##############################################################################
+# Argument Parsing
+##############################################################################
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            -v|--version)
+                version
+                exit 0
+                ;;
+            --memory)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --memory requires a value" 4
+                fi
+                MEMORY_LIMIT="$2"
+                shift 2
+                ;;
+            --cpus)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --cpus requires a value" 4
+                fi
+                CPU_LIMIT="$2"
+                shift 2
+                ;;
+            --build)
+                FORCE_BUILD=true
+                shift
+                ;;
+            --no-git)
+                NO_GIT=1
+                shift
+                ;;
+            --)
+                shift
+                CLAUDE_ARGS=("$@")
+                break
+                ;;
+            -*)
+                error "Unknown option: $1" 4
+                ;;
+            *)
+                error "Unexpected argument: $1" 4
+                ;;
+        esac
+    done
+}
+
+##############################################################################
+# Docker Run Construction
+##############################################################################
+
+run_container() {
+    local docker_args=()
+
+    # Interactive TTY
+    docker_args+=(-it)
+
+    # Remove container after exit
+    docker_args+=(--rm)
+
+    # Resource limits
+    docker_args+=(--memory="$MEMORY_LIMIT")
+    docker_args+=(--cpus="$CPU_LIMIT")
+
+    # Host network mode (required for arbitrary API access)
+    docker_args+=(--network host)
+
+    # Pass host UID/GID for permission matching
+    docker_args+=(-e "HOST_UID=$(id -u)")
+    docker_args+=(-e "HOST_GID=$(id -g)")
+
+    # Mount current working directory at the same path inside container
+    docker_args+=(-v "$PWD:$PWD")
+    docker_args+=(-w "$PWD")
+
+    # Mount Claude credentials directory (create if missing)
+    local claude_home="$HOME/.claude"
+    if [[ ! -d "$claude_home" ]]; then
+        info "Note: No existing Claude credentials found."
+        info "You will be prompted to authenticate on first use."
+        mkdir -p "$claude_home"
+    fi
+    docker_args+=(-v "$claude_home:/home/claude/.claude")
+
+    # Mount git config and SSH keys unless --no-git
+    if [[ -z "$NO_GIT" ]]; then
+        if [[ -f "$HOME/.gitconfig" ]]; then
+            docker_args+=(-v "$HOME/.gitconfig:/home/claude/.gitconfig:ro")
+        fi
+        if [[ -d "$HOME/.ssh" ]]; then
+            docker_args+=(-v "$HOME/.ssh:/home/claude/.ssh:ro")
+        fi
+    fi
+
+    # X11 display forwarding (if available)
+    if [[ -n "${DISPLAY:-}" ]]; then
+        docker_args+=(-e "DISPLAY=$DISPLAY")
+        if [[ -d /tmp/.X11-unix ]]; then
+            docker_args+=(-v /tmp/.X11-unix:/tmp/.X11-unix:ro)
+        fi
+    fi
+
+    # Wayland display forwarding (if available)
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]] && [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+        docker_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+        local wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+        if [[ -S "$wayland_socket" ]]; then
+            docker_args+=(-v "$wayland_socket:$wayland_socket:ro")
+            docker_args+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
+        fi
+    fi
+
+    # Execute docker run
+    exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+}
+
+##############################################################################
+# Main
+##############################################################################
+
+main() {
+    parse_args "$@"
+
+    # Validation checks
+    check_docker
+    check_working_directory
+
+    # Image management
+    if [[ "$FORCE_BUILD" == true ]]; then
+        build_image
+    else
+        ensure_image
+    fi
+
+    # Run the container
+    run_container
+}
+
+main "$@"
