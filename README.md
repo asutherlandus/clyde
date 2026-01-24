@@ -183,8 +183,9 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.claude.json` | Read/Write | Onboarding state, theme, tips history (skips setup wizard) |
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
 | `$SSH_AUTH_SOCK` | Read-only | SSH agent socket for git operations (see below) |
+| `~/.local/bin` | Read-only | User-installed binaries (added to PATH) |
 
-Note: When using `--profile`, the token is passed via environment variable and the container doesn't need access to profile files directly.
+Note: When using `--profile`, the token is passed via a mounted secret file (not environment variable) and the container doesn't need access to profile files directly.
 
 ## SSH Setup for Git Operations
 
