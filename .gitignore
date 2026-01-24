@@ -1,0 +1,38 @@
+# Claude Code
+# User-specific local settings (if any)
+.claude/settings.local.json
+.claude/cache/
+
+# Speckit - feature specs are project-specific, usually tracked
+# Uncomment if you want to ignore generated specs:
+# specs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-*
+
+# Docker
+# Ignore local override files (docker-compose.override.yml is for local dev)
+docker-compose.override.yml
+
+# Environment and secrets (NEVER commit these)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+
+# Build artifacts
+*.log
+tmp/
+temp/
