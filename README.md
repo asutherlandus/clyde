@@ -1,8 +1,16 @@
-![Clyde](clyde_banner.png)
+![CLYDE](clyde_banner.png)
 
-# Clyde
+# CLYDE - **C**omand **L**ine **YOLO** **D**evelopment **E**nvironment
 
 A Docker container for running Claude Code in an isolated environment.
+
+## Features
+
+- **Multi-Account Profiles** - Switch between multiple Anthropic accounts (Pro, Max, Work) with named profiles
+- **Container Isolation** - Run Claude Code in a sandboxed Docker environment
+- **Seamless Integration** - Mounts your project directory, git config, and SSH keys automatically
+- **Resource Control** - Configurable memory and CPU limits
+- **Display Forwarding** - X11/Wayland support for OAuth browser authentication (Untested)
 
 ## Prerequisites
 
@@ -45,9 +53,16 @@ clyde
 ```
 
 On first run:
-1. Docker image will be built (~2-5 minutes depending on connection)
+1. Docker image will be built automatically
 2. Claude Code will prompt for authentication (browser will open if display available)
 3. You're ready to use Claude Code in the isolated container
+
+**Tip**: To skip in-container authentication, set up a profile first:
+
+```bash
+clyde --add-profile default
+clyde  # Now uses your profile token automatically
+```
 
 ## Basic Usage
 
@@ -74,7 +89,7 @@ clyde --memory 16g --cpus 8
 ### Update Claude Code
 
 ```bash
-# Force rebuild to get latest Claude Code version
+# Rebuild the Docker image (pulls latest Claude Code)
 clyde --build
 ```
 
@@ -88,6 +103,67 @@ clyde -- --resume
 clyde -- --model claude-sonnet-4-20250514
 ```
 
+## Multi-Account Profiles
+
+Clyde supports named profiles for switching between multiple Anthropic accounts. This is useful if you have separate Pro and Max subscriptions, or work/personal accounts.
+
+### Creating a Profile
+
+```bash
+# Create a profile (interactive)
+clyde --add-profile pro
+```
+
+If you have existing OAuth credentials in `~/.claude/.credentials.json`, clyde will offer to use those. Otherwise, you'll need to:
+
+1. Run `claude setup-token` on your host system
+2. Complete browser authentication
+3. Paste the resulting token when prompted
+
+### Using Profiles
+
+```bash
+# Launch with a specific profile
+clyde --profile pro
+clyde -P max
+
+# Set a default profile (used when --profile not specified)
+clyde --set-default pro
+
+# Override default with environment variable
+CLYDE_PROFILE=max clyde
+```
+
+### Managing Profiles
+
+```bash
+# List all profiles (* marks default)
+clyde --list-profiles
+
+# Delete a profile
+clyde --delete-profile old-account
+```
+
+### Profile Storage
+
+Profiles are stored in `~/.claude/profiles/` with mode 600:
+
+```
+~/.claude/profiles/
+├── .default           # Contains name of default profile
+├── pro.json           # Profile with token and metadata
+└── max.json
+```
+
+### Token Expiration
+
+OAuth tokens expire periodically. If authentication fails, recreate the profile:
+
+```bash
+clyde --delete-profile pro
+clyde --add-profile pro
+```
+
 ## Configuration
 
 Set defaults via environment variables in your shell profile:
@@ -96,6 +172,7 @@ Set defaults via environment variables in your shell profile:
 # ~/.bashrc or ~/.zshrc
 export CLYDE_MEMORY=16g
 export CLYDE_CPUS=8
+export CLYDE_PROFILE=pro  # Default profile to use
 ```
 
 ## What Gets Mounted
@@ -103,9 +180,12 @@ export CLYDE_CPUS=8
 | Your Files | Container Access | Notes |
 |------------|------------------|-------|
 | Current directory | Read/Write | Full access for Claude Code to work on your project |
-| `~/.claude` | Read/Write | OAuth tokens and settings (created if missing) |
+| `~/.claude` | Read/Write | OAuth tokens, settings, and profiles (created if missing) |
+| `~/.claude.json` | Read/Write | Onboarding state, theme, tips history (skips setup wizard) |
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
 | `~/.ssh` | Read-only | SSH keys for git operations |
+
+Note: When using `--profile`, the token is passed via environment variable and the container doesn't need access to profile files directly.
 
 ## Verification
 

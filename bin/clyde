@@ -12,6 +12,10 @@ IMAGE_NAME="${CLYDE_IMAGE:-clyde:local}"
 MEMORY_LIMIT="${CLYDE_MEMORY:-8g}"
 CPU_LIMIT="${CLYDE_CPUS:-4}"
 
+# Profile management
+PROFILES_DIR="$HOME/.claude/profiles"
+PROFILE="${CLYDE_PROFILE:-}"
+
 # Flags
 FORCE_BUILD=false
 NO_GIT="${CLYDE_NO_GIT:-}"
@@ -30,24 +34,38 @@ Usage: clyde [OPTIONS] [-- CLAUDE_ARGS...]
 Launch Claude Code in an isolated Docker container with the current directory mounted.
 
 Options:
-    --memory <SIZE>    Container memory limit (default: 8g)
-    --cpus <NUM>       Container CPU limit (default: 4)
-    --build            Force rebuild of the Docker image
-    --no-git           Skip mounting ~/.gitconfig and ~/.ssh
-    -h, --help         Display this help message
-    -v, --version      Display version information
+    --memory <SIZE>        Container memory limit (default: 8g)
+    --cpus <NUM>           Container CPU limit (default: 4)
+    --build                Force rebuild of the Docker image
+    --no-git               Skip mounting ~/.gitconfig and ~/.ssh
+    -h, --help             Display this help message
+    -v, --version          Display version information
+
+Profile Options:
+    -P, --profile <NAME>   Use specified profile for authentication
+    --add-profile <NAME>   Create a new profile (interactive)
+    --delete-profile <NAME> Delete an existing profile
+    --list-profiles        List available profiles
+    --set-default <NAME>   Set the default profile
 
 Environment Variables:
-    CLYDE_MEMORY       Default memory limit (overridden by --memory)
-    CLYDE_CPUS         Default CPU limit (overridden by --cpus)
-    CLYDE_NO_GIT       If set to 1, skip git/SSH mounts
-    CLYDE_IMAGE        Custom image name (default: clyde:local)
+    CLYDE_MEMORY           Default memory limit (overridden by --memory)
+    CLYDE_CPUS             Default CPU limit (overridden by --cpus)
+    CLYDE_NO_GIT           If set to 1, skip git/SSH mounts
+    CLYDE_IMAGE            Custom image name (default: clyde:local)
+    CLYDE_PROFILE          Default profile to use (overridden by --profile)
 
 Examples:
     clyde                           Launch in current directory
     clyde --memory 16g --cpus 8     Custom resource limits
     clyde --build                   Force rebuild the image
     clyde -- --resume               Pass --resume to Claude Code
+
+Profile Examples:
+    clyde --add-profile pro         Create 'pro' profile with OAuth token
+    clyde --profile pro             Launch using 'pro' profile
+    clyde --set-default pro         Set 'pro' as default profile
+    CLYDE_PROFILE=max clyde         Use 'max' profile via environment
 
 EOF
 }
@@ -63,6 +81,190 @@ error() {
 
 info() {
     echo "$1" >&2
+}
+
+##############################################################################
+# Profile Management
+##############################################################################
+
+ensure_profiles_dir() {
+    if [[ ! -d "$PROFILES_DIR" ]]; then
+        mkdir -p "$PROFILES_DIR"
+        chmod 700 "$PROFILES_DIR"
+    fi
+}
+
+get_default_profile() {
+    local default_file="$PROFILES_DIR/.default"
+    if [[ -f "$default_file" ]]; then
+        cat "$default_file"
+    else
+        echo ""
+    fi
+}
+
+set_default_profile() {
+    local name="$1"
+    local profile_file="$PROFILES_DIR/${name}.json"
+
+    if [[ ! -f "$profile_file" ]]; then
+        error "Profile '$name' does not exist" 6
+    fi
+
+    ensure_profiles_dir
+    echo "$name" > "$PROFILES_DIR/.default"
+    info "Default profile set to '$name'"
+}
+
+get_profile_token() {
+    local name="$1"
+    local profile_file="$PROFILES_DIR/${name}.json"
+
+    if [[ ! -f "$profile_file" ]]; then
+        error "Profile '$name' does not exist. Run 'clyde --add-profile $name' to create it." 6
+    fi
+
+    if ! command -v jq &>/dev/null; then
+        # Fallback: use grep/sed if jq not available
+        grep -o '"token"[[:space:]]*:[[:space:]]*"[^"]*"' "$profile_file" | sed 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+    else
+        jq -r '.token' "$profile_file"
+    fi
+}
+
+list_profiles() {
+    ensure_profiles_dir
+    local default_profile
+    default_profile=$(get_default_profile)
+
+    local found=false
+    for profile_file in "$PROFILES_DIR"/*.json; do
+        if [[ -f "$profile_file" ]]; then
+            found=true
+            local name
+            name=$(basename "$profile_file" .json)
+            local description=""
+
+            if command -v jq &>/dev/null; then
+                description=$(jq -r '.description // ""' "$profile_file")
+            fi
+
+            if [[ "$name" == "$default_profile" ]]; then
+                echo "* $name (default)${description:+ - $description}"
+            else
+                echo "  $name${description:+ - $description}"
+            fi
+        fi
+    done
+
+    if [[ "$found" == false ]]; then
+        info "No profiles found. Run 'clyde --add-profile NAME' to create one."
+    fi
+}
+
+save_profile() {
+    local name="$1"
+    local token="$2"
+    local description="${3:-}"
+    local profile_file="$PROFILES_DIR/${name}.json"
+
+    ensure_profiles_dir
+
+    local created_at
+    created_at=$(date -Iseconds)
+
+    cat > "$profile_file" <<EOF
+{
+  "name": "$name",
+  "token": "$token",
+  "description": "$description",
+  "createdAt": "$created_at"
+}
+EOF
+    chmod 600 "$profile_file"
+    info "Profile '$name' saved."
+}
+
+add_profile() {
+    local name="$1"
+    local profile_file="$PROFILES_DIR/${name}.json"
+
+    if [[ -f "$profile_file" ]]; then
+        error "Profile '$name' already exists. Delete it first with 'clyde --delete-profile $name'" 6
+    fi
+
+    ensure_profiles_dir
+
+    echo "Creating profile: $name"
+    echo ""
+    echo "You'll need an OAuth token from Claude Code."
+    echo ""
+    echo "To get a token, run 'claude setup-token' on your host system."
+    echo "This will open a browser for authentication and output a token."
+    echo ""
+
+    # Check if we can extract from existing credentials
+    local credentials_file="$HOME/.claude/.credentials.json"
+    if [[ -f "$credentials_file" ]] && command -v jq &>/dev/null; then
+        local existing_token
+        existing_token=$(jq -r '.claudeAiOauth.accessToken // empty' "$credentials_file" 2>/dev/null || true)
+        if [[ -n "$existing_token" ]]; then
+            echo "Found existing OAuth token in ~/.claude/.credentials.json"
+            read -rp "Use this token for profile '$name'? [Y/n] " use_existing
+            if [[ "${use_existing:-Y}" =~ ^[Yy]$ ]]; then
+                read -rp "Description (optional): " description
+                save_profile "$name" "$existing_token" "$description"
+
+                # Set as default if it's the first profile
+                if [[ -z "$(get_default_profile)" ]]; then
+                    set_default_profile "$name"
+                fi
+                return 0
+            fi
+        fi
+    fi
+
+    echo ""
+    read -rp "Paste your OAuth token: " token
+
+    if [[ -z "$token" ]]; then
+        error "Token cannot be empty" 6
+    fi
+
+    read -rp "Description (optional): " description
+
+    save_profile "$name" "$token" "$description"
+
+    # Set as default if it's the first profile
+    if [[ -z "$(get_default_profile)" ]]; then
+        set_default_profile "$name"
+    fi
+}
+
+delete_profile() {
+    local name="$1"
+    local profile_file="$PROFILES_DIR/${name}.json"
+
+    if [[ ! -f "$profile_file" ]]; then
+        error "Profile '$name' does not exist" 6
+    fi
+
+    read -rp "Delete profile '$name'? [y/N] " confirm
+    if [[ ! "${confirm:-N}" =~ ^[Yy]$ ]]; then
+        info "Cancelled."
+        return 0
+    fi
+
+    rm "$profile_file"
+    info "Profile '$name' deleted."
+
+    # Clear default if this was the default profile
+    local default_profile
+    default_profile=$(get_default_profile)
+    if [[ "$default_profile" == "$name" ]]; then
+        rm -f "$PROFILES_DIR/.default"
+        info "Default profile cleared."
+    fi
 }
 
 ##############################################################################
@@ -155,6 +357,38 @@ parse_args() {
                 NO_GIT=1
                 shift
                 ;;
+            -P|--profile)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --profile requires a name" 4
+                fi
+                PROFILE="$2"
+                shift 2
+                ;;
+            --add-profile)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --add-profile requires a name" 4
+                fi
+                add_profile "$2"
+                exit 0
+                ;;
+            --delete-profile)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --delete-profile requires a name" 4
+                fi
+                delete_profile "$2"
+                exit 0
+                ;;
+            --list-profiles)
+                list_profiles
+                exit 0
+                ;;
+            --set-default)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --set-default requires a profile name" 4
+                fi
+                set_default_profile "$2"
+                exit 0
+                ;;
             --)
                 shift
                 CLAUDE_ARGS=("$@")
@@ -194,6 +428,21 @@ run_container() {
     docker_args+=(-e "HOST_UID=$(id -u)")
     docker_args+=(-e "HOST_GID=$(id -g)")
 
+    # Profile-based token authentication
+    local active_profile="$PROFILE"
+    if [[ -z "$active_profile" ]]; then
+        active_profile=$(get_default_profile)
+    fi
+
+    if [[ -n "$active_profile" ]]; then
+        local token
+        token=$(get_profile_token "$active_profile")
+        if [[ -n "$token" ]]; then
+            docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$token")
+            info "Using profile: $active_profile"
+        fi
+    fi
+
     # Mount current working directory at the same path inside container
     docker_args+=(-v "$PWD:$PWD")
     docker_args+=(-w "$PWD")
@@ -206,6 +455,12 @@ run_container() {
         mkdir -p "$claude_home"
     fi
     docker_args+=(-v "$claude_home:/home/claude/.claude")
+
+    # Mount Claude config file (contains onboarding state, theme, etc.)
+    local claude_json="$HOME/.claude.json"
+    if [[ -f "$claude_json" ]]; then
+        docker_args+=(-v "$claude_json:/home/claude/.claude.json")
+    fi
 
     # Mount git config and SSH keys unless --no-git
     if [[ -z "$NO_GIT" ]]; then
