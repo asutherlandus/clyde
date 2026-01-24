@@ -572,6 +572,12 @@ run_container() {
         fi
     fi
 
+    # Mount user's local bin directory for additional tools
+    if [[ -d "$HOME/.local/bin" ]]; then
+        docker_args+=(-v "$HOME/.local/bin:/home/claude/.local/bin:ro")
+        docker_args+=(-e "PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    fi
+
     # Execute docker run
     exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
 }
