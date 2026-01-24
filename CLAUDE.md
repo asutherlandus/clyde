@@ -89,25 +89,11 @@ bats tests/
 ## Key Implementation Notes
 
 1. **UID/GID Matching**: Container creates user at runtime matching host user's UID/GID
-2. **Display Forwarding**: Auto-detect and forward X11/Wayland for OAuth browser flow
+2. **SSH Agent Forwarding**: Forward SSH agent socket (not keys) for git operations
 3. **Resource Limits**: Default 8GB RAM, 4 CPUs; configurable via flags
 4. **Auto-build**: Script builds image on first run if missing
 
 ## Security Considerations
-
-### X11/Wayland Display Forwarding
-
-Display forwarding is enabled by default to support OAuth browser flows. However, this grants the container access to the X11 server, which has security implications:
-
-- **Keylogging risk**: X11 clients can read keyboard events from other windows
-- **Screen capture**: Container could potentially capture screen content
-- **Input injection**: Container could simulate input to other applications
-
-**Mitigations:**
-- Use `--no-display` flag when browser OAuth is not needed
-- Use `CLYDE_NO_DISPLAY=1` environment variable for persistent configuration
-- Consider using Wayland with proper isolation (more secure than X11)
-- A warning is displayed when display forwarding is active
 
 ### Token Storage
 

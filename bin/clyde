@@ -19,7 +19,6 @@ PROFILE="${CLYDE_PROFILE:-}"
 # Flags
 FORCE_BUILD=false
 NO_GIT="${CLYDE_NO_GIT:-}"
-NO_DISPLAY="${CLYDE_NO_DISPLAY:-}"
 
 # Arguments to pass to Claude Code
 CLAUDE_ARGS=()
@@ -41,8 +40,7 @@ Options:
     --memory <SIZE>        Container memory limit (default: 8g)
     --cpus <NUM>           Container CPU limit (default: 4)
     --build                Force rebuild of the Docker image
-    --no-git               Skip mounting ~/.gitconfig and ~/.ssh
-    --no-display           Disable X11/Wayland display forwarding
+    --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
     -h, --help             Display this help message
     -v, --version          Display version information
 
@@ -57,7 +55,6 @@ Environment Variables:
     CLYDE_MEMORY           Default memory limit (overridden by --memory)
     CLYDE_CPUS             Default CPU limit (overridden by --cpus)
     CLYDE_NO_GIT           If set to 1, skip git/SSH mounts
-    CLYDE_NO_DISPLAY       If set to 1, disable display forwarding
     CLYDE_IMAGE            Custom image name (default: clyde:local)
     CLYDE_PROFILE          Default profile to use (overridden by --profile)
 
@@ -437,10 +434,6 @@ parse_args() {
                 NO_GIT=1
                 shift
                 ;;
-            --no-display)
-                NO_DISPLAY=1
-                shift
-                ;;
             -P|--profile)
                 if [[ -z "${2:-}" ]]; then
                     error "Option --profile requires a name" 4
@@ -576,42 +569,6 @@ run_container() {
             # Fallback warning: agent not available, SSH won't work in container
             warn "SSH agent not running. Git SSH operations will not work in container."
             warn "Start ssh-agent and add keys with: eval \$(ssh-agent) && ssh-add"
-        fi
-    fi
-
-    # X11/Wayland display forwarding (unless --no-display)
-    if [[ -z "$NO_DISPLAY" ]]; then
-        local display_forwarded=false
-
-        # X11 display forwarding (if available)
-        if [[ -n "${DISPLAY:-}" ]]; then
-            # Validate DISPLAY format
-            if [[ ! "$DISPLAY" =~ ^:[0-9]+(\.[0-9]+)?$ ]] && [[ ! "$DISPLAY" =~ ^[a-zA-Z0-9._-]+:[0-9]+(\.[0-9]+)?$ ]]; then
-                warn "DISPLAY value '$DISPLAY' has unexpected format, skipping X11 forwarding."
-            else
-                docker_args+=(-e "DISPLAY=$DISPLAY")
-                if [[ -d /tmp/.X11-unix ]]; then
-                    docker_args+=(-v /tmp/.X11-unix:/tmp/.X11-unix:ro)
-                    display_forwarded=true
-                fi
-            fi
-        fi
-
-        # Wayland display forwarding (if available)
-        if [[ -n "${WAYLAND_DISPLAY:-}" ]] && [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
-            docker_args+=(-e "WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
-            local wayland_socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-            if [[ -S "$wayland_socket" ]]; then
-                docker_args+=(-v "$wayland_socket:$wayland_socket:ro")
-                docker_args+=(-e "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR")
-                display_forwarded=true
-            fi
-        fi
-
-        # Security warning when display is forwarded
-        if [[ "$display_forwarded" == true ]]; then
-            warn "Display forwarding enabled. Container can access X11/Wayland (potential keylogging risk)."
-            warn "Use --no-display to disable if not needed for OAuth browser flow."
         fi
     fi
 
