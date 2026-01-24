@@ -31,7 +31,7 @@ if [[ -n "$existing_user" ]]; then
     mkdir -p /home/claude
     chown "$HOST_UID:$HOST_GID" /home/claude
 
-    # Only chown .claude directory (not read-only mounts like .ssh, .gitconfig)
+    # Only chown .claude directory (not read-only mounts like .gitconfig)
     if [[ -d /home/claude/.claude ]]; then
         chown -R "$HOST_UID:$HOST_GID" /home/claude/.claude
     fi

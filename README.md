@@ -1,6 +1,6 @@
 ![CLYDE](clyde_banner.png)
 
-# CLYDE - **C**omand **L**ine **YOLO** **D**evelopment **E**nvironment
+# **CLYDE** - **C**omand **L**ine **YOLO** **D**evelopment **E**nvironment
 
 A Docker container for running Claude Code in an isolated environment.
 
@@ -8,7 +8,7 @@ A Docker container for running Claude Code in an isolated environment.
 
 - **Multi-Account Profiles** - Switch between multiple Anthropic accounts (Pro, Max, Work) with named profiles
 - **Container Isolation** - Run Claude Code in a sandboxed Docker environment
-- **Seamless Integration** - Mounts your project directory, git config, and SSH keys automatically
+- **Seamless Integration** - Mounts your project directory, git config, and forwards SSH agent automatically
 - **Resource Control** - Configurable memory and CPU limits
 - **Display Forwarding** - X11/Wayland support for OAuth browser authentication (Untested)
 
@@ -183,9 +183,75 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.claude` | Read/Write | OAuth tokens, settings, and profiles (created if missing) |
 | `~/.claude.json` | Read/Write | Onboarding state, theme, tips history (skips setup wizard) |
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
-| `~/.ssh` | Read-only | SSH keys for git operations |
+| `$SSH_AUTH_SOCK` | Read-only | SSH agent socket for git operations (see below) |
 
 Note: When using `--profile`, the token is passed via environment variable and the container doesn't need access to profile files directly.
+
+## SSH Setup for Git Operations
+
+Clyde forwards your SSH agent socket to the container rather than mounting your `~/.ssh` directory directly. This is more secure because your private keys never enter the container.
+
+### Prerequisites
+
+Your SSH agent must be running with your keys loaded:
+
+```bash
+# Check if SSH agent is running
+echo $SSH_AUTH_SOCK
+
+# If empty, start the agent
+eval "$(ssh-agent -s)"
+
+# Add your SSH key
+ssh-add ~/.ssh/id_ed25519   # or id_rsa, etc.
+
+# Verify keys are loaded
+ssh-add -l
+```
+
+### Persistent SSH Agent
+
+To avoid running `ssh-add` every time, configure your shell to start the agent automatically.
+
+**For ~/.bashrc or ~/.zshrc:**
+
+```bash
+# Start SSH agent if not running
+if [ -z "$SSH_AUTH_SOCK" ]; then
+    eval "$(ssh-agent -s)" > /dev/null
+    ssh-add ~/.ssh/id_ed25519 2>/dev/null
+fi
+```
+
+**For GNOME/KDE desktop users:** The keyring usually handles this automatically. Your keys should already be available.
+
+**For macOS users:**
+
+```bash
+# Add to ~/.ssh/config to use Keychain
+Host *
+    AddKeysToAgent yes
+    UseKeychain yes
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+### Verifying SSH Works in Container
+
+```bash
+# Launch clyde and test SSH
+clyde
+
+# Inside Claude Code, ask it to test:
+> Run 'ssh -T git@github.com' to verify SSH works
+```
+
+### Disabling SSH/Git Integration
+
+If you don't need git operations via SSH:
+
+```bash
+clyde --no-git
+```
 
 ## Verification
 
@@ -239,6 +305,30 @@ Try rebuilding:
 clyde --build
 ```
 
+### Git SSH operations fail in container
+
+```
+Warning: SSH agent not running. Git SSH operations will not work in container.
+```
+
+**Solution**: Start the SSH agent and add your key:
+
+```bash
+# Start agent
+eval "$(ssh-agent -s)"
+
+# Add your key
+ssh-add ~/.ssh/id_ed25519
+
+# Verify it's loaded
+ssh-add -l
+
+# Now launch clyde
+clyde
+```
+
+See [SSH Setup for Git Operations](#ssh-setup-for-git-operations) for persistent configuration.
+
 ## Uninstallation
 
 ```bash
@@ -256,7 +346,8 @@ docker rmi clyde:local
 
 - **Container isolation**: Commands run by Claude Code cannot access files outside your mounted project directory
 - **Skip-permissions mode**: Enabled by default inside the container; the container boundary provides isolation
-- **Read-only mounts**: Your SSH keys and git config are mounted read-only
+- **SSH agent forwarding**: Private keys stay on your host; only the agent socket is forwarded (read-only)
+- **Read-only mounts**: Your git config is mounted read-only
 - **Non-root**: Container runs as your user (not root) for proper file permissions
 - **Resource limits**: Default 8GB RAM / 4 CPU prevents runaway processes
 
