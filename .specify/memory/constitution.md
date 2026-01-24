@@ -1,18 +1,14 @@
 <!--
 Sync Impact Report
 ==================
-Version change: 0.0.0 → 1.0.0 (initial ratification)
-Modified principles: N/A (initial creation)
-Added sections:
-  - Core Principles (5 principles)
-  - Container Architecture section
-  - Shell Scripting Standards section
-  - Governance section
-Removed sections: N/A
-Templates requiring updates:
-  - .specify/templates/plan-template.md: ✅ No updates needed (Constitution Check already generic)
-  - .specify/templates/spec-template.md: ✅ No updates needed (requirements already generic)
-  - .specify/templates/tasks-template.md: ✅ No updates needed (task structure compatible)
+Version change: 1.0.0 → 1.1.0
+Modified principles: Container Architecture - Base Image
+Changes:
+  - Base Image requirement changed from "Use" to "Prefer" minimal images
+  - Added formal exception mechanism for larger base images when compatibility requires
+  - Exceptions must document: compatibility reason, rejected alternatives, compensating controls
+Rationale: Claude Code npm packages may require glibc; Alpine musl can cause runtime issues
+Templates requiring updates: None
 Follow-up TODOs: None
 -->
 
@@ -82,8 +78,12 @@ misconfiguration vulnerabilities.
 
 Container design MUST follow these structural requirements:
 
-- **Base Image**: Use official, minimal base images (Alpine, Distroless, or slim variants).
-  Document security scanning results for chosen base.
+- **Base Image**: Prefer official, minimal base images (Alpine, Distroless, or slim variants)
+  to reduce attack surface. When compatibility requirements necessitate a larger base image
+  (e.g., glibc dependencies, native module support), the deviation MUST be documented in
+  plan.md Complexity Tracking with: (1) specific compatibility reason, (2) rejected
+  alternatives, and (3) compensating controls. Document security scanning results for
+  chosen base regardless of size.
 - **Layer Optimization**: Order Dockerfile instructions from least to most frequently
   changing to maximize build cache efficiency.
 - **Secret Management**: Never store secrets in images or environment variables visible
@@ -132,4 +132,4 @@ All pull requests and code reviews MUST verify compliance with these principles.
 - Security-sensitive changes MUST document their compliance with Principle I (Isolation)
   and Principle V (Fail-Safe Defaults).
 
-**Version**: 1.0.0 | **Ratified**: 2026-01-24 | **Last Amended**: 2026-01-24
+**Version**: 1.1.0 | **Ratified**: 2026-01-24 | **Last Amended**: 2026-01-24

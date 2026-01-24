@@ -1,0 +1,41 @@
+# Build context exclusions for Clyde Docker image
+
+# Version control
+.git/
+.gitignore
+
+# Documentation
+*.md
+README*
+LICENSE
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+tests/
+*.bats
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+
+# Build artifacts
+*.log*
+
+# Specs directory
+specs/
+
+# Claude local settings
+.claude/
