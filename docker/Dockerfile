@@ -39,10 +39,20 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 3: Install Claude Code globally via npm with pinned version
+# Layer 3: Install GitHub CLI via official repository
+# Uses GPG key verification for security
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Layer 4: Install Claude Code globally via npm with pinned version
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# Layer 4: Copy entrypoint and browser wrapper scripts
+# Layer 5: Copy entrypoint and browser wrapper scripts
 COPY entrypoint.sh /entrypoint.sh
 COPY open-url.sh /usr/local/bin/open-url
 RUN chmod +x /entrypoint.sh /usr/local/bin/open-url
