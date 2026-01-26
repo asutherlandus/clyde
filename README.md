@@ -17,13 +17,38 @@ A Docker container for running Claude Code in an isolated environment.
 - Anthropic account with Claude Code subscription (Max or similar)
 - Linux or macOS (Windows via WSL2 may work but is untested)
 
+## Comparison with Alternatives
+
+You may want to consider one of these alternative options for running Claude in a Docker container:
+
+| Feature | Clyde | [ClaudeBox](https://github.com/RchGrav/claudebox) | [Docker Official](https://docs.docker.com/ai/sandboxes/claude-code/) | [claude-code-container](https://github.com/tintinweb/claude-code-container) |
+|---------|-------|----------|-----------------|------------------------|
+| **Agents Supported** | Claude Code | Claude Code | Claude Code | Claude Code |
+| **Operating Systems** | Linux, macOS, WSL2 | Linux, macOS | Linux, macOS, Windows | Linux, macOS |
+| **Multi-Account Profiles** | ✅ Named profiles with token management | ❌ Per-project auth | ❌ Single credential volume | ❌ |
+| **UID/GID Matching** | ✅ Dynamic at runtime | ✅ | ❌ Fixed `agent` user | ❌ Fixed `claude` user (1001) |
+| **SSH Handling** | ✅ Agent forwarding (keys stay on host) | ❌ GitHub CLI only | ❌ | ❌ |
+| **Network Isolation** | ❌ Full network access | ✅ Firewall with allowlists | ❌ Full network access | ✅ Bridge networking |
+| **Resource Limits** | ✅ Configurable RAM/CPU | ❌ | ❌ | ✅ PID limit (100) |
+| **Security Hardening** | Non-root, read-only mounts | Non-root, optional sudo | Non-root with sudo | Capability dropping, no-new-privileges, tmpfs isolation |
+| **Pre-installed Tools** | Minimal (Node.js, git) | 15+ language profiles | Node.js, Go, Python, gh, Docker CLI | Minimal + MCP servers |
+| **Project Isolation** | Shared image, per-directory | Separate image per project | Shared image | Shared image |
+| **Ease of Setup** | `clyde` (auto-builds) | `claudebox` | `docker sandbox run claude` | `docker compose up` |
+| **IDE Integration** | ❌ | ❌ | ❌ | ❌ |
+| **Use Case** | Daily development with account switching | Multi-project with network control | Quick start, official support | Security-focused analysis |
+
+**Why choose Clyde?**
+- You have multiple Anthropic accounts (Pro, Max, Work) and need to switch between them
+- You need SSH git operations (others rely on GitHub CLI or don't support SSH)
+- You prefer configurable resource limits for different project sizes
+
 ## Installation
 
 ### Option 1: Clone and Install
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/clyde.git
+git clone https://github.com/asutherlandus/clyde.git
 cd clyde
 
 # Add bin directory to PATH (add to ~/.bashrc or ~/.zshrc for persistence)
@@ -34,7 +59,7 @@ export PATH="$PATH:$(pwd)/bin"
 
 ```bash
 # Download the clyde script
-curl -fsSL https://raw.githubusercontent.com/your-org/clyde/main/bin/clyde -o ~/.local/bin/clyde
+curl -fsSL https://raw.githubusercontent.com/asutherlandus/clyde/main/bin/clyde -o ~/.local/bin/clyde
 chmod +x ~/.local/bin/clyde
 
 # Ensure ~/.local/bin is in PATH
