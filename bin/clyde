@@ -7,6 +7,7 @@ set -euo pipefail
 VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="${CLYDE_IMAGE:-clyde:local}"
+DOCKER_DIR="${CLYDE_DOCKER_DIR:-$SCRIPT_DIR/../docker}"
 
 # Default resource limits (can be overridden via environment or flags)
 MEMORY_LIMIT="${CLYDE_MEMORY:-8g}"
@@ -57,6 +58,7 @@ Environment Variables:
     CLYDE_NO_GIT           If set to 1, skip git/SSH mounts
     CLYDE_IMAGE            Custom image name (default: clyde:local)
     CLYDE_PROFILE          Default profile to use (overridden by --profile)
+    CLYDE_DOCKER_DIR       Path to docker directory (default: script_dir/../docker)
 
 Examples:
     clyde                           Launch in current directory
@@ -371,14 +373,12 @@ EOF
 ##############################################################################
 
 build_image() {
-    local docker_dir="$SCRIPT_DIR/../docker"
-
-    if [[ ! -d "$docker_dir" ]]; then
-        error "Docker directory not found at $docker_dir" 3
+    if [[ ! -d "$DOCKER_DIR" ]]; then
+        error "Docker directory not found at $DOCKER_DIR" 3
     fi
 
     info "Building Clyde image..."
-    if ! docker build -t "$IMAGE_NAME" "$docker_dir"; then
+    if ! docker build -t "$IMAGE_NAME" "$DOCKER_DIR"; then
         cat >&2 <<EOF
 Error: Failed to build Clyde image.
 Check the build output above for details.
