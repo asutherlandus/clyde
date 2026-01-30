@@ -10,6 +10,7 @@ A Docker container for running Claude Code in an isolated environment.
 - **Container Isolation** - Run Claude Code in a sandboxed Docker environment
 - **Seamless Integration** - Mounts your project directory, git config, and forwards SSH agent automatically
 - **Resource Control** - Configurable memory and CPU limits
+- **Nix Package Management** - Add project-specific tools via `flake.nix` without rebuilding the image
 
 ## Prerequisites
 
@@ -31,7 +32,7 @@ You may want to consider one of these alternative options for running Claude in 
 | **Network Isolation** | ❌ Full network access | ✅ Firewall with allowlists | ❌ Full network access | ✅ Bridge networking |
 | **Resource Limits** | ✅ Configurable RAM/CPU | ❌ | ❌ | ✅ PID limit (100) |
 | **Security Hardening** | Non-root, read-only mounts | Non-root, optional sudo | Non-root with sudo | Capability dropping, no-new-privileges, tmpfs isolation |
-| **Pre-installed Tools** | Minimal (Node.js, git) | 15+ language profiles | Node.js, Go, Python, gh, Docker CLI | Minimal + MCP servers |
+| **Pre-installed Tools** | Nix-based (customizable via flake.nix) | 15+ language profiles | Node.js, Go, Python, gh, Docker CLI | Minimal + MCP servers |
 | **Project Isolation** | Shared image, per-directory | Separate image per project | Shared image | Shared image |
 | **Ease of Setup** | `clyde` (auto-builds) | `claudebox` | `docker sandbox run claude` | `docker compose up` |
 | **IDE Integration** | ❌ | ❌ | ❌ | ❌ |
@@ -116,6 +117,27 @@ clyde --memory 16g --cpus 8
 # Rebuild the Docker image (pulls latest Claude Code)
 clyde --build
 ```
+
+### Custom Development Tools
+
+Clyde uses Nix to manage development dependencies. Add project-specific tools by creating a `flake.nix` in your project root:
+
+```nix
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-24.05";
+  outputs = { self, nixpkgs }:
+    let pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    in {
+      devShells.default = pkgs.mkShellNoCC {
+        packages = with pkgs; [ python312 poetry rustc cargo ];
+      };
+    };
+}
+```
+
+Packages are cached in a Docker volume - first run downloads them, subsequent runs start in under a second.
+
+See [Nix Dependency Management](docs/nix-dependency-management.md) for more examples (Python, Rust, Go, etc.) and configuration options.
 
 ### Pass Arguments to Claude Code
 
@@ -209,6 +231,9 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
 | `$SSH_AUTH_SOCK` | Read-only | SSH agent socket for git operations (see below) |
 | `~/.local/bin` | Read-only | User-installed binaries (added to PATH) |
+| `~/.config/clyde` | Read-only | User's global Nix packages (optional) |
+| `clyde-nix-store` (volume) | Read/Write | Nix package cache (persists across runs) |
+| `clyde-npm-cache` (volume) | Read/Write | Claude Code installation cache |
 
 Note: When using `--profile`, the token is passed via a mounted secret file (not environment variable) and the container doesn't need access to profile files directly.
 
@@ -354,6 +379,17 @@ clyde
 
 See [SSH Setup for Git Operations](#ssh-setup-for-git-operations) for persistent configuration.
 
+### First run is slow / Nix downloading packages
+
+The first time you run Clyde (or add new packages to `flake.nix`), Nix downloads the required packages. This can take 30-60 seconds depending on your network.
+
+Subsequent runs use the cached packages and start in under a second.
+
+To free disk space from unused packages:
+```bash
+clyde --nix-gc
+```
+
 ## Uninstallation
 
 ```bash
@@ -362,6 +398,9 @@ rm ~/.local/bin/clyde  # or wherever you installed it
 
 # Remove the Docker image
 docker rmi clyde:local
+
+# Remove Nix package cache volumes
+docker volume rm clyde-nix-store clyde-npm-cache
 
 # Optionally remove Claude credentials (shared with native Claude Code)
 # rm -rf ~/.claude  # WARNING: This logs you out of Claude Code everywhere

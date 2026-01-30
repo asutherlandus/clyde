@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# clyde-packages: List packages available in the current Nix environment
+# Run this inside a clyde container to see what's installed
+
+echo "Packages in current environment:"
+echo ""
+
+# List executables in PATH from Nix store
+for dir in $(echo "$PATH" | tr ':' '\n'); do
+    if [[ "$dir" == /nix/store/* ]]; then
+        if [[ -d "$dir" ]]; then
+            # Extract package name from Nix store path
+            pkg_name=$(echo "$dir" | sed -E 's|/nix/store/[^-]+-([^/]+)/.*|\1|')
+            echo "  - $pkg_name"
+        fi
+    fi
+done | sort -u
+
+echo ""
+echo "Claude Code version:"
+claude --version 2>/dev/null || echo "  (not installed)"
+
+echo ""
+echo "Node.js version:"
+node --version 2>/dev/null || echo "  (not available)"

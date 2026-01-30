@@ -155,3 +155,63 @@ EOF
     run "$CLYDE_SCRIPT" --help
     [[ "$output" =~ "CLYDE_CPUS" ]]
 }
+
+##############################################################################
+# Nix-Related Flag Tests
+##############################################################################
+
+@test "help includes --nix-verbose option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--nix-verbose" ]]
+}
+
+@test "help includes --nix-gc option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--nix-gc" ]]
+}
+
+@test "help includes --list-packages option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--list-packages" ]]
+}
+
+@test "help includes CLYDE_NIX_VERBOSE environment variable" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "CLYDE_NIX_VERBOSE" ]]
+}
+
+@test "help includes CLYDE_NIX_STORE_VOLUME environment variable" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "CLYDE_NIX_STORE_VOLUME" ]]
+}
+
+@test "clyde --list-packages shows default packages" {
+    run "$CLYDE_SCRIPT" --list-packages
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Default packages" ]]
+    [[ "$output" =~ "claude" ]]
+    [[ "$output" =~ "git" ]]
+    [[ "$output" =~ "node" ]]
+}
+
+@test "clyde --list-packages detects project flake.nix" {
+    # Create a temp directory with a flake.nix
+    mkdir -p "$TEST_TMPDIR/project"
+    echo '{}' > "$TEST_TMPDIR/project/flake.nix"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --list-packages"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Project packages" ]]
+    [[ "$output" =~ "flake.nix" ]]
+}
+
+@test "clyde --list-packages detects project shell.nix" {
+    # Create a temp directory with a shell.nix
+    mkdir -p "$TEST_TMPDIR/project"
+    echo '{}' > "$TEST_TMPDIR/project/shell.nix"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --list-packages"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Project packages" ]]
+    [[ "$output" =~ "shell.nix" ]]
+}
