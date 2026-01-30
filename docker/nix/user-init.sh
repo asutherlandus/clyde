@@ -81,14 +81,43 @@ activate_environment() {
 
     echo "Loading $config_type environment..." >&2
 
+    # For non-default configs, first get the base environment PATH
+    # This ensures nodejs (required for claude) is always available
+    local base_path=""
+    if [[ "$config_type" != "default" ]]; then
+        echo "Including base packages (nodejs, git, gh)..." >&2
+        base_path=$(nix develop /docker/nix --quiet --command bash -c 'echo $PATH' 2>/dev/null) || true
+    fi
+
     # Build the nix command
     local nix_cmd
     local nix_args=()
 
+    # Build the inner script that runs inside nix develop
+    # Include base_path to ensure nodejs is available for claude
+    local inner_script
+    inner_script=$(cat <<INNER
+# Add base packages to PATH (ensures nodejs is available for claude)
+if [[ -n "$base_path" ]]; then
+    export PATH="$base_path:\$PATH"
+fi
+# Add npm global to PATH
+export PATH="${NPM_GLOBAL}/bin:\$PATH"
+# Install/update Claude Code via npm (cached in volume)
+echo "Checking Claude Code..." >&2
+if ! command -v claude &>/dev/null; then
+    echo "Installing Claude Code..." >&2
+    npm install -g @anthropic-ai/claude-code 2>&1 | grep -v "^npm" || true
+fi
+echo "Environment ready!" >&2
+exec "\$@"
+INNER
+)
+
     if [[ "$config_type" == *"shell.nix"* ]]; then
         nix_cmd="nix-shell"
         nix_args+=("$nix_config")
-        nix_args+=("--run" "exec bash -c 'install_claude_and_run \"\$@\"' -- \"\$@\"")
+        nix_args+=("--run" "bash -c '$inner_script' -- \"\$@\"")
     else
         nix_cmd="nix"
         nix_args+=("develop" "$nix_config")
@@ -100,32 +129,11 @@ activate_environment() {
             nix_args+=("--quiet")
         fi
 
-        nix_args+=("--command" "bash" "-c" 'install_claude_and_run "$@"' "--")
+        nix_args+=("--command" "bash" "-c" "$inner_script" "--")
     fi
-
-    # Export the function for use in subshell
-    export -f install_claude_and_run
 
     # Execute Nix environment
     exec "$nix_cmd" "${nix_args[@]}" "$@"
-}
-
-##############################################################################
-# Claude Code Installation
-##############################################################################
-
-install_claude_and_run() {
-    # Install/update Claude Code via npm (cached in volume)
-    echo "Checking Claude Code..." >&2
-    if ! command -v claude &>/dev/null; then
-        echo "Installing Claude Code..." >&2
-        npm install -g @anthropic-ai/claude-code 2>&1 | grep -v "^npm" || true
-    fi
-
-    echo "Environment ready!" >&2
-
-    # Execute the requested command
-    exec "$@"
 }
 
 ##############################################################################
