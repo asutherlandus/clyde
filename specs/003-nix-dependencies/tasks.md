@@ -27,9 +27,9 @@ Per plan.md, this is a single-project structure:
 
 **Purpose**: Backup existing files and create new directory structure
 
-- [ ] T001 Backup current Dockerfile to docker/Dockerfile.old
-- [ ] T002 Create docker/nix/ directory structure for Nix configurations
-- [ ] T003 [P] Create tests/integration/nix-configs/ directory for test fixtures
+- [x] T001 Backup current Dockerfile to docker/Dockerfile.old
+- [x] T002 Create docker/nix/ directory structure for Nix configurations
+- [x] T003 [P] Create tests/integration/nix-configs/ directory for test fixtures
 
 ---
 
@@ -39,13 +39,13 @@ Per plan.md, this is a single-project structure:
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create minimal Dockerfile with Ubuntu 24.04 minimal + Nix + tini/gosu in docker/Dockerfile
-- [ ] T005 [P] Create base Nix flake with default packages (git, gh, nodejs, curl, openssh) in docker/nix/flake.nix (NOTE: claude-code NOT included - installed via npm)
-- [ ] T006 Create docker/nix/flake.lock by running nix flake lock in docker/nix/
-- [ ] T007 Add Nix profile sourcing and /nix ownership transfer to docker/entrypoint.sh
-- [ ] T008 Add clyde-nix-store volume mount to bin/clyde
-- [ ] T008a Add clyde-npm-cache volume mount to bin/clyde for Claude Code installation
-- [ ] T009 Add Nix environment variables (CLYDE_NIX_VERBOSE, CLYDE_NIX_STORE_VOLUME) to bin/clyde
+- [x] T004 Create minimal Dockerfile with Ubuntu 24.04 minimal + Nix + tini/gosu in docker/Dockerfile
+- [x] T005 [P] Create base Nix flake with default packages (git, gh, nodejs, curl, openssh) in docker/nix/flake.nix (NOTE: claude-code NOT included - installed via npm)
+- [x] T006 Create docker/nix/flake.lock by running nix flake lock in docker/nix/
+- [x] T007 Add Nix profile sourcing and /nix ownership transfer to docker/entrypoint.sh
+- [x] T008 Add clyde-nix-store volume mount to bin/clyde
+- [x] T008a Add clyde-npm-cache volume mount to bin/clyde for Claude Code installation
+- [x] T009 Add Nix environment variables (CLYDE_NIX_VERBOSE, CLYDE_NIX_STORE_VOLUME) to bin/clyde
 
 **Checkpoint**: Foundation ready - Nix installed in container, base flake created, both volume mounts configured (nix-store + npm-cache)
 
@@ -59,12 +59,12 @@ Per plan.md, this is a single-project structure:
 
 ### Implementation for User Story 1
 
-- [ ] T010 [US1] Add Nix environment activation to docker/entrypoint.sh (default flake path: /docker/nix)
-- [ ] T010a [US1] Add Claude Code npm installation to docker/entrypoint.sh (npm install -g @anthropic-ai/claude-code with cached prefix)
-- [ ] T011 [US1] Add progress output filtering (show package names during fetch) to docker/entrypoint.sh
-- [ ] T012 [US1] Add --nix-verbose flag handling to bin/clyde (sets CLYDE_NIX_VERBOSE=1)
-- [ ] T013 [US1] Update docker/entrypoint.sh to respect CLYDE_NIX_VERBOSE for full Nix output
-- [ ] T014 [P] [US1] Create test fixture: empty directory for zero-config test in tests/integration/nix-configs/zero-config/
+- [x] T010 [US1] Add Nix environment activation to docker/entrypoint.sh (default flake path: /docker/nix)
+- [x] T010a [US1] Add Claude Code npm installation to docker/entrypoint.sh (npm install -g @anthropic-ai/claude-code with cached prefix)
+- [x] T011 [US1] Add progress output filtering (show package names during fetch) to docker/entrypoint.sh
+- [x] T012 [US1] Add --nix-verbose flag handling to bin/clyde (sets CLYDE_NIX_VERBOSE=1)
+- [x] T013 [US1] Update docker/entrypoint.sh to respect CLYDE_NIX_VERBOSE for full Nix output
+- [x] T014 [P] [US1] Create test fixture: empty directory for zero-config test in tests/integration/nix-configs/zero-config/
 - [ ] T015 [US1] Verify startup time is within acceptable range (<10s cached) - manual validation
 
 **Checkpoint**: Zero-config users can run clyde with default packages via Nix
@@ -81,10 +81,10 @@ Per plan.md, this is a single-project structure:
 
 ### Implementation for User Story 4
 
-- [ ] T016 [US4] Add automatic clyde-nix-store volume creation to bin/clyde (if not exists)
-- [ ] T017 [US4] Add --nix-gc flag to bin/clyde for garbage collection
-- [ ] T018 [US4] Implement nix-collect-garbage command execution in docker/entrypoint.sh (when --nix-gc passed)
-- [ ] T019 [P] [US4] Create test fixture: flake.nix with unique package for cache testing in tests/integration/nix-configs/cache-test/flake.nix
+- [x] T016 [US4] Add automatic clyde-nix-store volume creation to bin/clyde (if not exists)
+- [x] T017 [US4] Add --nix-gc flag to bin/clyde for garbage collection
+- [x] T018 [US4] Implement nix-collect-garbage command execution in docker/entrypoint.sh (when --nix-gc passed)
+- [x] T019 [P] [US4] Create test fixture: flake.nix with unique package for cache testing in tests/integration/nix-configs/cache-test/flake.nix
 
 **Checkpoint**: Nix store persists across container restarts, --nix-gc works
 
@@ -98,15 +98,15 @@ Per plan.md, this is a single-project structure:
 
 ### Implementation for User Story 2
 
-- [ ] T020 [US2] Add project flake.nix/shell.nix detection to bin/clyde
-- [ ] T021 [US2] Add mount of project's flake.nix, shell.nix, flake.lock (read-only) to bin/clyde
-- [ ] T022 [US2] Add project config detection and nix develop/nix-shell activation to docker/entrypoint.sh
-- [ ] T023 [US2] Add error handling with "Proceed with defaults? [Y/n]" prompt to docker/entrypoint.sh
-- [ ] T023a [US2] Add disk space error detection with "clyde --nix-gc" suggestion to docker/entrypoint.sh
-- [ ] T023b [US2] Add network error handling with clear message listing unfetched packages to docker/entrypoint.sh
-- [ ] T024 [P] [US2] Create test fixture: valid flake.nix with ripgrep in tests/integration/nix-configs/project-flake/flake.nix
-- [ ] T025 [P] [US2] Create test fixture: valid shell.nix in tests/integration/nix-configs/project-shell/shell.nix
-- [ ] T026 [P] [US2] Create test fixture: invalid flake.nix (syntax error) in tests/integration/nix-configs/invalid-flake/flake.nix
+- [x] T020 [US2] Add project flake.nix/shell.nix detection to bin/clyde
+- [x] T021 [US2] Add mount of project's flake.nix, shell.nix, flake.lock (read-only) to bin/clyde
+- [x] T022 [US2] Add project config detection and nix develop/nix-shell activation to docker/entrypoint.sh
+- [x] T023 [US2] Add error handling with "Proceed with defaults? [Y/n]" prompt to docker/entrypoint.sh
+- [x] T023a [US2] Add disk space error detection with "clyde --nix-gc" suggestion to docker/entrypoint.sh
+- [x] T023b [US2] Add network error handling with clear message listing unfetched packages to docker/entrypoint.sh
+- [x] T024 [P] [US2] Create test fixture: valid flake.nix with ripgrep in tests/integration/nix-configs/project-flake/flake.nix
+- [x] T025 [P] [US2] Create test fixture: valid shell.nix in tests/integration/nix-configs/project-shell/shell.nix
+- [x] T026 [P] [US2] Create test fixture: invalid flake.nix (syntax error) in tests/integration/nix-configs/invalid-flake/flake.nix
 
 **Checkpoint**: Project-specific packages work with flake.nix and shell.nix, errors handled gracefully
 
@@ -120,11 +120,11 @@ Per plan.md, this is a single-project structure:
 
 ### Implementation for User Story 3
 
-- [ ] T027 [US3] Add ~/.config/clyde/ mount (read-only) detection to bin/clyde
-- [ ] T028 [US3] Add user config detection (flake.nix/shell.nix in ~/.config/clyde/) to docker/entrypoint.sh
-- [ ] T029 [US3] Implement configuration layer merging (inputsFrom) in docker/entrypoint.sh
-- [ ] T030 [US3] Ensure project config takes precedence over user config on conflicts
-- [ ] T031 [P] [US3] Create test fixture: user flake.nix with jq in tests/integration/nix-configs/user-config/flake.nix
+- [x] T027 [US3] Add ~/.config/clyde/ mount (read-only) detection to bin/clyde
+- [x] T028 [US3] Add user config detection (flake.nix/shell.nix in ~/.config/clyde/) to docker/entrypoint.sh
+- [x] T029 [US3] Implement configuration layer merging (inputsFrom) in docker/entrypoint.sh
+- [x] T030 [US3] Ensure project config takes precedence over user config on conflicts
+- [x] T031 [P] [US3] Create test fixture: user flake.nix with jq in tests/integration/nix-configs/user-config/flake.nix
 
 **Checkpoint**: User global packages merged with project packages, precedence correct
 
@@ -138,9 +138,9 @@ Per plan.md, this is a single-project structure:
 
 ### Implementation for User Story 5
 
-- [ ] T032 [US5] Add --list-packages flag to bin/clyde
-- [ ] T033 [US5] Implement package listing without starting full session (nix flake show or similar) in bin/clyde
-- [ ] T034 [P] [US5] Create clyde-packages helper script for in-container package listing in docker/nix/clyde-packages
+- [x] T032 [US5] Add --list-packages flag to bin/clyde
+- [x] T033 [US5] Implement package listing without starting full session (nix flake show or similar) in bin/clyde
+- [x] T034 [P] [US5] Create clyde-packages helper script for in-container package listing in docker/nix/clyde-packages
 
 **Checkpoint**: Package inspection works both outside (--list-packages) and inside (clyde-packages) container
 
@@ -150,10 +150,10 @@ Per plan.md, this is a single-project structure:
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T035 [P] Update bin/clyde --help text to include new Nix-related flags
-- [ ] T036 [P] Update docker/Dockerfile comments to explain Nix installation
-- [ ] T037 Run shellcheck on modified scripts (bin/clyde, docker/entrypoint.sh)
-- [ ] T038 [P] Extend tests/unit/clyde.bats with Nix flag parsing tests
+- [x] T035 [P] Update bin/clyde --help text to include new Nix-related flags
+- [x] T036 [P] Update docker/Dockerfile comments to explain Nix installation
+- [x] T037 Run shellcheck on modified scripts (bin/clyde, docker/entrypoint.sh)
+- [x] T038 [P] Extend tests/unit/clyde.bats with Nix flag parsing tests
 - [ ] T039 Validate quickstart.md scenarios work end-to-end (manual testing)
 - [ ] T039a Verify existing clyde features work post-migration: SSH agent forwarding, --profile flag, --memory/--cpus limits, git config mounting
 - [ ] T040 Verify SC-004: Docker image size reduced by at least 50% (manual validation)

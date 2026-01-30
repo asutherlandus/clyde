@@ -1,0 +1,3 @@
+# This directory contains Nix flake configuration
+# flake.lock is generated automatically when the Docker image is built
+# or when nix flake lock is run manually

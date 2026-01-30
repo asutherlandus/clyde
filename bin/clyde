@@ -4,7 +4,7 @@ set -euo pipefail
 # Clyde - Docker Container for Claude Code
 # Launches Claude Code in an isolated container with the current directory mounted
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="${CLYDE_IMAGE:-clyde:local}"
 DOCKER_DIR="${CLYDE_DOCKER_DIR:-$SCRIPT_DIR/../docker}"
@@ -17,9 +17,16 @@ CPU_LIMIT="${CLYDE_CPUS:-4}"
 PROFILES_DIR="$HOME/.claude/profiles"
 PROFILE="${CLYDE_PROFILE:-}"
 
+# Nix-related configuration
+NIX_STORE_VOLUME="${CLYDE_NIX_STORE_VOLUME:-clyde-nix-store}"
+NPM_CACHE_VOLUME="${CLYDE_NPM_CACHE_VOLUME:-clyde-npm-cache}"
+NIX_VERBOSE="${CLYDE_NIX_VERBOSE:-0}"
+
 # Flags
 FORCE_BUILD=false
 NO_GIT="${CLYDE_NO_GIT:-}"
+NIX_GC=false
+LIST_PACKAGES=false
 
 # Arguments to pass to Claude Code
 CLAUDE_ARGS=()
@@ -36,6 +43,7 @@ usage() {
 Usage: clyde [OPTIONS] [-- CLAUDE_ARGS...]
 
 Launch Claude Code in an isolated Docker container with the current directory mounted.
+Packages are managed via Nix for reproducibility; Claude Code is always latest via npm.
 
 Options:
     --memory <SIZE>        Container memory limit (default: 8g)
@@ -44,6 +52,11 @@ Options:
     --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
     -h, --help             Display this help message
     -v, --version          Display version information
+
+Nix Options:
+    --nix-verbose          Show full Nix output during environment setup
+    --nix-gc               Garbage collect unused packages from Nix store
+    --list-packages        Show packages that would be available (without starting session)
 
 Profile Options:
     -P, --profile <NAME>   Use specified profile for authentication
@@ -59,12 +72,23 @@ Environment Variables:
     CLYDE_IMAGE            Custom image name (default: clyde:local)
     CLYDE_PROFILE          Default profile to use (overridden by --profile)
     CLYDE_DOCKER_DIR       Path to docker directory (default: script_dir/../docker)
+    CLYDE_NIX_VERBOSE      Show full Nix output if set to 1
+    CLYDE_NIX_STORE_VOLUME Named Docker volume for /nix (default: clyde-nix-store)
+    CLYDE_NPM_CACHE_VOLUME Named Docker volume for npm global (default: clyde-npm-cache)
+
+Nix Configuration:
+    Project-specific: Place flake.nix or shell.nix in your project root
+    User-global:      Place flake.nix or shell.nix in ~/.config/clyde/
+    Default:          Uses built-in packages (git, gh, node, curl, ssh)
 
 Examples:
     clyde                           Launch in current directory
     clyde --memory 16g --cpus 8     Custom resource limits
     clyde --build                   Force rebuild the image
     clyde -- --resume               Pass --resume to Claude Code
+    clyde --nix-verbose             Debug Nix environment setup
+    clyde --nix-gc                  Clean up unused Nix packages
+    clyde --list-packages           Preview available packages
 
 Profile Examples:
     clyde --add-profile pro         Create 'pro' profile with OAuth token
@@ -434,6 +458,18 @@ parse_args() {
                 NO_GIT=1
                 shift
                 ;;
+            --nix-verbose)
+                NIX_VERBOSE=1
+                shift
+                ;;
+            --nix-gc)
+                NIX_GC=true
+                shift
+                ;;
+            --list-packages)
+                LIST_PACKAGES=true
+                shift
+                ;;
             -P|--profile)
                 if [[ -z "${2:-}" ]]; then
                     error "Option --profile requires a name" 4
@@ -483,6 +519,49 @@ parse_args() {
 }
 
 ##############################################################################
+# Nix Package Listing
+##############################################################################
+
+list_available_packages() {
+    # Show what packages would be available without starting a full session
+    info "Packages available in this environment:"
+    echo ""
+
+    # Check for project config
+    if [[ -f "$PWD/flake.nix" ]]; then
+        echo "Project packages (from $PWD/flake.nix):"
+        echo "  [Detected - packages will be shown at container start]"
+        echo ""
+    elif [[ -f "$PWD/shell.nix" ]]; then
+        echo "Project packages (from $PWD/shell.nix):"
+        echo "  [Detected - packages will be shown at container start]"
+        echo ""
+    fi
+
+    # Check for user config
+    if [[ -f "$HOME/.config/clyde/flake.nix" ]]; then
+        echo "User packages (from ~/.config/clyde/flake.nix):"
+        echo "  [Detected - packages will be shown at container start]"
+        echo ""
+    elif [[ -f "$HOME/.config/clyde/shell.nix" ]]; then
+        echo "User packages (from ~/.config/clyde/shell.nix):"
+        echo "  [Detected - packages will be shown at container start]"
+        echo ""
+    fi
+
+    echo "Default packages (always available):"
+    echo "  - claude (Claude Code CLI - latest via npm)"
+    echo "  - node / npm (Node.js 20 LTS)"
+    echo "  - git (version control)"
+    echo "  - gh (GitHub CLI)"
+    echo "  - curl (HTTP client)"
+    echo "  - ssh (SSH client)"
+    echo ""
+
+    info "Run 'clyde' to start and see all resolved packages."
+}
+
+##############################################################################
 # Docker Run Construction
 ##############################################################################
 
@@ -505,6 +584,18 @@ run_container() {
     # Pass host UID/GID for permission matching
     docker_args+=(-e "HOST_UID=$(id -u)")
     docker_args+=(-e "HOST_GID=$(id -g)")
+
+    # Mount Nix store volume for package caching
+    docker_args+=(-v "$NIX_STORE_VOLUME:/nix")
+
+    # Mount npm cache volume for Claude Code installation
+    docker_args+=(-v "$NPM_CACHE_VOLUME:/home/claude/.npm-global")
+
+    # Pass Nix-related environment variables
+    docker_args+=(-e "CLYDE_NIX_VERBOSE=$NIX_VERBOSE")
+    if [[ "$NIX_GC" == true ]]; then
+        docker_args+=(-e "CLYDE_NIX_GC=1")
+    fi
 
     # Profile-based token authentication via mounted secret file
     # (Avoids exposing token in docker inspect or /proc/environ)
@@ -572,10 +663,37 @@ run_container() {
         fi
     fi
 
+    # Mount GitHub CLI config directory for authentication
+    if [[ -d "$HOME/.config/gh" ]]; then
+        docker_args+=(-v "$HOME/.config/gh:/home/claude/.config/gh:ro")
+    fi
+
     # Mount user's local bin directory for additional tools
     if [[ -d "$HOME/.local/bin" ]]; then
         docker_args+=(-v "$HOME/.local/bin:/home/claude/.local/bin:ro")
         docker_args+=(-e "PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+    fi
+
+    # Mount user's Nix configuration directory if exists
+    if [[ -d "$HOME/.config/clyde" ]]; then
+        docker_args+=(-v "$HOME/.config/clyde:/home/claude/.config/clyde:ro")
+        # Detect user flake or shell.nix
+        if [[ -f "$HOME/.config/clyde/flake.nix" ]]; then
+            docker_args+=(-e "CLYDE_USER_FLAKE=/home/claude/.config/clyde")
+        elif [[ -f "$HOME/.config/clyde/shell.nix" ]]; then
+            docker_args+=(-e "CLYDE_USER_SHELL=/home/claude/.config/clyde/shell.nix")
+        fi
+    fi
+
+    # Detect project Nix configuration in current directory
+    if [[ -f "$PWD/flake.nix" ]]; then
+        docker_args+=(-e "CLYDE_PROJECT_FLAKE=$PWD")
+        # Mount flake.lock if exists (read-only for reproducibility)
+        if [[ -f "$PWD/flake.lock" ]]; then
+            docker_args+=(-v "$PWD/flake.lock:$PWD/flake.lock:ro")
+        fi
+    elif [[ -f "$PWD/shell.nix" ]]; then
+        docker_args+=(-e "CLYDE_PROJECT_SHELL=$PWD/shell.nix")
     fi
 
     # Execute docker run
@@ -588,6 +706,12 @@ run_container() {
 
 main() {
     parse_args "$@"
+
+    # Handle --list-packages (doesn't need docker)
+    if [[ "$LIST_PACKAGES" == true ]]; then
+        list_available_packages
+        exit 0
+    fi
 
     # Validation checks
     check_docker

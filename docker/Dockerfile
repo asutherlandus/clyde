@@ -1,14 +1,14 @@
 # Clyde - Docker Container for Claude Code
-# Version: 1.1.0
+# Version: 2.0.0
+#
+# This image uses a hybrid approach:
+# - Nix provides project dependencies (git, gh, Node.js, etc.) with flake.lock pinning
+# - Claude Code is installed via npm at runtime for always-latest version
+# - Base image is minimal Ubuntu for glibc compatibility
 
-# Base image: Ubuntu 24.04 for glibc compatibility with npm native modules
+# Base image: Ubuntu 24.04 minimal (~40MB vs ~78MB full)
 # Pinned to specific digest for reproducibility
 FROM ubuntu:24.04@sha256:cd1dba651b3080c3686ecf4e3c4220f026b521fb76978881737d24f200828b2b
-
-# Build arguments
-ARG NODE_VERSION=20
-# Pin claude-code version for reproducible builds
-ARG CLAUDE_CODE_VERSION=2.1.19
 
 # Suppress apt prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,41 +16,39 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Set browser wrapper for OAuth URL printing
 ENV BROWSER=/usr/local/bin/open-url
 
-# Install system packages with pinned versions
-# Layer 1: Base system packages
+# Layer 1: Install minimal system packages
+# - curl, ca-certificates, xz-utils: Required for Nix installation
+# - tini: Init process for proper signal handling
+# - gosu: Drop privileges to non-root user
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl=8.5.0-2ubuntu10.6 \
     ca-certificates=20240203 \
-    git=1:2.43.0-1ubuntu7.3 \
-    openssh-client=1:9.6p1-3ubuntu13.14 \
+    xz-utils=5.6.1+really5.4.5-1ubuntu0.2 \
     tini=0.19.0-1 \
     gosu=1.17-1ubuntu0.24.04.3 \
-    xdg-utils=1.1.3-4.1ubuntu3 \
-    gnupg=2.4.4-2ubuntu17.4 \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 2: Install Node.js via NodeSource (download, verify, then execute)
-# Uses GPG key verification instead of curl|bash pattern
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_VERSION}.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+# Layer 2: Configure Nix settings before installation
+# Disable build-users-group since we're running in single-user mode in Docker
+RUN mkdir -p /etc/nix && \
+    echo "experimental-features = nix-command flakes" > /etc/nix/nix.conf && \
+    echo "build-users-group =" >> /etc/nix/nix.conf && \
+    mkdir -p /root/.config/nix && \
+    cp /etc/nix/nix.conf /root/.config/nix/nix.conf
 
-# Layer 3: Install GitHub CLI via official repository
-# Uses GPG key verification for security
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        | gpg --dearmor -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
+# Layer 3: Install Nix manually in single-user mode
+# The official installer doesn't work well as root in Docker, so we install manually
+ARG NIX_VERSION=2.24.10
+RUN mkdir -p /nix && \
+    curl -L "https://releases.nixos.org/nix/nix-${NIX_VERSION}/nix-${NIX_VERSION}-x86_64-linux.tar.xz" | tar -xJ -C /tmp && \
+    /tmp/nix-${NIX_VERSION}-x86_64-linux/install --no-daemon && \
+    rm -rf /tmp/nix-${NIX_VERSION}-x86_64-linux
 
-# Layer 4: Install Claude Code globally via npm with pinned version
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Layer 4: Copy Nix configurations and generate flake.lock
+COPY nix/ /docker/nix/
+RUN chmod +x /docker/nix/clyde-packages /docker/nix/user-init.sh && \
+    ln -s /docker/nix/clyde-packages /usr/local/bin/clyde-packages && \
+    /root/.nix-profile/bin/nix flake lock /docker/nix
 
 # Layer 5: Copy entrypoint and browser wrapper scripts
 COPY entrypoint.sh /entrypoint.sh
