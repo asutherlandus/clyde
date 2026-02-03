@@ -4,7 +4,7 @@ set -euo pipefail
 # Clyde - Docker Container for Claude Code
 # Launches Claude Code in an isolated container with the current directory mounted
 
-VERSION="2.0.0"
+VERSION="0.4.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="${CLYDE_IMAGE:-clyde:local}"
 DOCKER_DIR="${CLYDE_DOCKER_DIR:-$SCRIPT_DIR/../docker}"
