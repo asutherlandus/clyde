@@ -11,6 +11,7 @@ A Docker container for running Claude Code in an isolated environment.
 - **Seamless Integration** - Mounts your project directory, git config, and forwards SSH agent automatically
 - **Resource Control** - Configurable memory and CPU limits
 - **Nix Package Management** - Add project-specific tools via `flake.nix` without rebuilding the image
+- **Debugging Options** - Shell mode, X11 forwarding, and single-command execution for troubleshooting
 
 ## Prerequisites
 
@@ -35,6 +36,8 @@ You may want to consider one of these alternative options for running Claude in 
 | **Pre-installed Tools** | Nix-based (customizable via flake.nix) | 15+ language profiles | Node.js, Go, Python, gh, Docker CLI | Minimal + MCP servers |
 | **Project Isolation** | Shared image, per-directory | Separate image per project | Shared image | Shared image |
 | **Ease of Setup** | `clyde` (auto-builds) | `claudebox` | `docker sandbox run claude` | `docker compose up` |
+| **X11/GUI Support** | ✅ `--x11` flag with font mounting | ❌ | ❌ | ❌ |
+| **Shell/Exec Mode** | ✅ `--shell`, `--exec` | ❌ | ❌ | ❌ |
 | **IDE Integration** | ❌ | ❌ | ❌ | ❌ |
 | **Use Case** | Daily development with account switching | Multi-project with network control | Quick start, official support | Security-focused analysis |
 
@@ -149,6 +152,83 @@ clyde -- --resume
 clyde -- --model claude-sonnet-4-20250514
 ```
 
+## Container Debugging
+
+Clyde provides options for debugging and testing in the container environment without starting Claude Code.
+
+### Shell Mode
+
+Launch an interactive bash shell with the same environment Claude Code uses:
+
+```bash
+# Get a shell prompt inside the container
+clyde --shell
+
+# Inside the container, you have access to the same tools
+git status
+npm test
+cargo build
+```
+
+This is useful for:
+- Debugging failing tests in the exact environment Claude sees
+- Verifying Nix packages are installed correctly
+- Manual testing before running Claude Code
+
+### Execute a Single Command
+
+Run a command in the container and exit immediately:
+
+```bash
+# Run tests
+clyde --exec npm test
+
+# Build project
+clyde --exec cargo build --release
+
+# Any command with arguments
+clyde --exec python -m pytest -v tests/
+```
+
+Useful for CI/CD pipelines or scripted workflows.
+
+### X11 Forwarding
+
+Enable graphical application support (Linux only):
+
+```bash
+# Shell with X11 for GUI debugging tools
+clyde --x11 --shell
+
+# Run a graphical application
+clyde --x11 --exec xclock
+
+# Normal Claude mode with X11 (if Claude needs to run GUI apps)
+clyde --x11
+```
+
+X11 forwarding mounts `/tmp/.X11-unix` and passes your `DISPLAY` environment variable. Host fonts are automatically mounted for proper text rendering.
+
+### Combining Options
+
+| Command | Behavior |
+|---------|----------|
+| `clyde --shell` | Interactive bash shell |
+| `clyde --exec cmd` | Run `cmd` and exit |
+| `clyde --x11` | Claude Code with X11 |
+| `clyde --x11 --shell` | Shell with X11 |
+| `clyde --x11 --exec cmd` | Run graphical `cmd` |
+| `clyde --shell --exec cmd` | Error (mutually exclusive) |
+
+### Environment Variables
+
+Set debugging defaults in your shell profile:
+
+```bash
+export CLYDE_SHELL=true   # Always start in shell mode
+export CLYDE_X11=true     # Always enable X11
+```
+
 ## Multi-Account Profiles
 
 Clyde supports named profiles for switching between multiple Anthropic accounts. This is useful if you have separate Pro and Max subscriptions, or work/personal accounts.
@@ -234,6 +314,16 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.config/clyde` | Read-only | User's global Nix packages (optional) |
 | `clyde-nix-store` (volume) | Read/Write | Nix package cache (persists across runs) |
 | `clyde-npm-cache` (volume) | Read/Write | Claude Code installation cache |
+
+**With `--x11` enabled:**
+
+| Your Files | Container Access | Notes |
+|------------|------------------|-------|
+| `/tmp/.X11-unix` | Read/Write | X11 socket for display forwarding |
+| `/usr/share/fonts` | Read-only | System fonts |
+| `~/.local/share/fonts` | Read-only | User fonts (XDG location) |
+| `~/.fonts` | Read-only | User fonts (legacy location) |
+| `/var/cache/fontconfig` | Read-only | Font cache for faster loading |
 
 Note: When using `--profile`, the token is passed via a mounted secret file (not environment variable) and the container doesn't need access to profile files directly.
 
@@ -390,6 +480,31 @@ To free disk space from unused packages:
 clyde --nix-gc
 ```
 
+### X11: "cannot open display" or missing fonts
+
+```
+Error: X11 forwarding requested but DISPLAY is not set.
+```
+
+**Solution**: Ensure you're running from a graphical session with DISPLAY set:
+```bash
+echo $DISPLAY  # Should show something like ":0" or ":1"
+```
+
+If DISPLAY is empty, you're likely in a non-graphical terminal (SSH without X11 forwarding, TTY console, etc.).
+
+**For SSH with X11 forwarding:**
+```bash
+ssh -X user@host  # Enable X11 forwarding
+```
+
+**If fonts are missing in GUI apps:**
+
+Clyde mounts host fonts automatically, but if you still see missing fonts:
+1. Verify fonts exist on host: `ls /usr/share/fonts`
+2. Rebuild font cache: `fc-cache -fv`
+3. Try again with `clyde --x11 --shell`
+
 ## Uninstallation
 
 ```bash
@@ -414,6 +529,7 @@ docker volume rm clyde-nix-store clyde-npm-cache
 - **Read-only mounts**: Your git config is mounted read-only
 - **Non-root**: Container runs as your user (not root) for proper file permissions
 - **Resource limits**: Default 8GB RAM / 4 CPU prevents runaway processes
+- **X11 security**: When using `--x11`, container processes can interact with your X11 display. This is a known X11 limitation. Only use with trusted code.
 
 ## License
 
