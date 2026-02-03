@@ -187,3 +187,117 @@ teardown() {
     run docker ps -a --filter "name=$container_name" --format '{{.Names}}'
     [ -z "$output" ]
 }
+
+##############################################################################
+# Shell Mode Integration Tests
+##############################################################################
+
+@test "Shell mode has same environment parity as normal mode" {
+    # Verify the shell mode environment matches what Claude would see
+    # Check that key tools are available
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        "$IMAGE_NAME" bash -c 'which git && which node && which npm && echo "ENV_PARITY_OK"'
+
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "ENV_PARITY_OK" ]]
+}
+
+@test "Shell mode can access mounted directory" {
+    # Create a test file
+    echo "test shell mount" > "$TEST_TMPDIR/shell-test.txt"
+
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -v "$TEST_TMPDIR:$TEST_TMPDIR" \
+        -w "$TEST_TMPDIR" \
+        "$IMAGE_NAME" bash -c 'cat shell-test.txt'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "test shell mount" ]
+}
+
+##############################################################################
+# Exec Mode Integration Tests
+##############################################################################
+
+@test "Exec mode runs command and exits" {
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        "$IMAGE_NAME" echo "exec test output"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "exec test output" ]
+}
+
+@test "Exec mode passes exit code correctly" {
+    # Run a command that should fail
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        "$IMAGE_NAME" sh -c 'exit 42'
+
+    [ "$status" -eq 42 ]
+}
+
+@test "Exec mode has access to Nix-installed tools" {
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        "$IMAGE_NAME" bash -c 'git --version && node --version'
+
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "git version" ]]
+    [[ "$output" =~ "v20" ]]
+}
+
+##############################################################################
+# X11 Mode Integration Tests (conditional)
+##############################################################################
+
+@test "X11 socket mount is accessible when provided" {
+    # Skip if X11 is not available on host
+    if [ -z "${DISPLAY:-}" ] || [ ! -d "/tmp/.X11-unix" ]; then
+        skip "X11 not available on host"
+    fi
+
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -v "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+        -e "DISPLAY=$DISPLAY" \
+        "$IMAGE_NAME" sh -c 'test -d /tmp/.X11-unix && echo "X11_SOCKET_OK"'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "X11_SOCKET_OK" ]
+}
+
+@test "DISPLAY environment is passed to container" {
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -e "DISPLAY=:99" \
+        "$IMAGE_NAME" sh -c 'echo "DISPLAY=$DISPLAY"'
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "DISPLAY=:99" ]
+}
+
+@test "X11 mode mounts host fonts when available" {
+    # Skip if system fonts don't exist on host
+    if [ ! -d "/usr/share/fonts" ]; then
+        skip "System fonts not available on host"
+    fi
+
+    run docker run --rm \
+        -e "HOST_UID=$(id -u)" \
+        -e "HOST_GID=$(id -g)" \
+        -v "/usr/share/fonts:/usr/share/fonts:ro" \
+        "$IMAGE_NAME" sh -c 'test -d /usr/share/fonts && ls /usr/share/fonts | head -1'
+
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+}

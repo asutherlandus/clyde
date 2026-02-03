@@ -215,3 +215,213 @@ EOF
     [[ "$output" =~ "Project packages" ]]
     [[ "$output" =~ "shell.nix" ]]
 }
+
+##############################################################################
+# Shell Mode Tests
+##############################################################################
+
+@test "clyde --shell flag is parsed correctly" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo the last argument to verify it's 'bash'
+echo "CMD=${*: -1}"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --shell"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "CMD=bash" ]]
+}
+
+@test "help includes --shell option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--shell" ]]
+    [[ "$output" =~ "Launch interactive bash shell" ]]
+}
+
+@test "help includes CLYDE_SHELL environment variable" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "CLYDE_SHELL" ]]
+}
+
+##############################################################################
+# X11 Mode Tests
+##############################################################################
+
+@test "clyde --x11 flag is parsed correctly" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo all args to check for X11 related
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    # Set DISPLAY to avoid validation error
+    DISPLAY=:0 run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --x11"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "/tmp/.X11-unix" ]]
+    [[ "$output" =~ "DISPLAY" ]]
+}
+
+@test "clyde --x11 fails when DISPLAY is unset" {
+    # Create mock docker
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    # Unset DISPLAY and run with --x11
+    run bash -c "cd \"$TEST_TMPDIR/project\" && unset DISPLAY && \"$CLYDE_SCRIPT\" --x11"
+    [ "$status" -eq 7 ]
+    [[ "$output" =~ "DISPLAY is not set" ]]
+}
+
+@test "clyde --x11 mounts host fonts when available" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo all args to check for font mounts
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    # Set DISPLAY and run with --x11
+    DISPLAY=:0 run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --x11"
+    [ "$status" -eq 0 ]
+    # Check that font directory mount is attempted (if /usr/share/fonts exists on host)
+    if [ -d "/usr/share/fonts" ]; then
+        [[ "$output" =~ "/usr/share/fonts" ]]
+    fi
+}
+
+@test "help includes --x11 option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--x11" ]]
+    [[ "$output" =~ "X11 forwarding" ]]
+}
+
+@test "help includes CLYDE_X11 environment variable" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "CLYDE_X11" ]]
+}
+
+##############################################################################
+# Exec Mode Tests
+##############################################################################
+
+@test "clyde --exec flag is parsed correctly" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo all args to see the command
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --exec cargo test"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "cargo test" ]]
+}
+
+@test "clyde --exec captures remaining arguments" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo all args to see the full command
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && \"$CLYDE_SCRIPT\" --exec npm run build --production"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "npm run build --production" ]]
+}
+
+@test "clyde --shell --exec fails with mutual exclusivity error" {
+    # Create mock docker
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    run "$CLYDE_SCRIPT" --shell --exec echo test
+    [ "$status" -eq 4 ]
+    [[ "$output" =~ "mutually exclusive" ]]
+}
+
+@test "clyde --exec without command exits with error" {
+    # Create mock docker
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    run "$CLYDE_SCRIPT" --exec
+    [ "$status" -eq 4 ]
+    [[ "$output" =~ "requires a command" ]]
+}
+
+@test "help includes --exec option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--exec" ]]
+    [[ "$output" =~ "Execute a command" ]]
+}

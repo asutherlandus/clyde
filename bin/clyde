@@ -28,6 +28,11 @@ NO_GIT="${CLYDE_NO_GIT:-}"
 NIX_GC=false
 LIST_PACKAGES=false
 
+# Container debugging options
+SHELL_MODE="${CLYDE_SHELL:-false}"
+X11_ENABLED="${CLYDE_X11:-false}"
+EXEC_COMMAND=()
+
 # Arguments to pass to Claude Code
 CLAUDE_ARGS=()
 
@@ -50,6 +55,9 @@ Options:
     --cpus <NUM>           Container CPU limit (default: 4)
     --build                Force rebuild of the Docker image
     --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
+    --shell                Launch interactive bash shell instead of Claude Code
+    --x11                  Enable X11 forwarding for graphical applications
+    --exec <COMMAND>       Execute a command in the container and exit
     -h, --help             Display this help message
     -v, --version          Display version information
 
@@ -75,6 +83,8 @@ Environment Variables:
     CLYDE_NIX_VERBOSE      Show full Nix output if set to 1
     CLYDE_NIX_STORE_VOLUME Named Docker volume for /nix (default: clyde-nix-store)
     CLYDE_NPM_CACHE_VOLUME Named Docker volume for npm global (default: clyde-npm-cache)
+    CLYDE_SHELL            If set to true/1, launch shell instead of Claude Code
+    CLYDE_X11              If set to true/1, enable X11 forwarding
 
 Nix Configuration:
     Project-specific: Place flake.nix or shell.nix in your project root
@@ -89,6 +99,10 @@ Examples:
     clyde --nix-verbose             Debug Nix environment setup
     clyde --nix-gc                  Clean up unused Nix packages
     clyde --list-packages           Preview available packages
+    clyde --shell                   Interactive shell for debugging
+    clyde --x11 --shell             Shell with X11 forwarding
+    clyde --exec cargo test         Run command in container and exit
+    clyde --x11 --exec xclock       Run graphical app in container
 
 Profile Examples:
     clyde --add-profile pro         Create 'pro' profile with OAuth token
@@ -114,6 +128,19 @@ info() {
 
 warn() {
     echo "Warning: $1" >&2
+}
+
+validate_x11() {
+    if [[ -z "${DISPLAY:-}" ]]; then
+        error "X11 forwarding requested but DISPLAY is not set.
+Set DISPLAY or run from a graphical session." 7
+    fi
+    # Check if X11 socket exists (warn if not, but don't fail - SSH X11 forwarding uses TCP)
+    local display_num="${DISPLAY#:}"
+    display_num="${display_num%%.*}"
+    if [[ ! -S "/tmp/.X11-unix/X${display_num}" ]] && [[ ! -S "/tmp/.X11-unix/X0" ]]; then
+        warn "X11 socket not found at expected location. X11 may not work."
+    fi
 }
 
 # Cleanup function for temporary files
@@ -503,6 +530,22 @@ parse_args() {
                 set_default_profile "$2"
                 exit 0
                 ;;
+            --shell)
+                SHELL_MODE=true
+                shift
+                ;;
+            --x11)
+                X11_ENABLED=true
+                shift
+                ;;
+            --exec)
+                shift
+                if [[ $# -eq 0 ]]; then
+                    error "Option --exec requires a command" 4
+                fi
+                EXEC_COMMAND=("$@")
+                break  # Stop parsing; rest is the command
+                ;;
             --)
                 shift
                 CLAUDE_ARGS=("$@")
@@ -516,6 +559,16 @@ parse_args() {
                 ;;
         esac
     done
+
+    # Mutual exclusivity check: --shell and --exec cannot be used together
+    if [[ "$SHELL_MODE" == true ]] && [[ ${#EXEC_COMMAND[@]} -gt 0 ]]; then
+        error "Options --shell and --exec are mutually exclusive" 4
+    fi
+
+    # Warning: --shell with -- CLAUDE_ARGS doesn't make sense
+    if [[ "$SHELL_MODE" == true ]] && [[ ${#CLAUDE_ARGS[@]} -gt 0 ]]; then
+        warn "Option --shell ignores Claude arguments after --"
+    fi
 }
 
 ##############################################################################
@@ -696,8 +749,38 @@ run_container() {
         docker_args+=(-e "CLYDE_PROJECT_SHELL=$PWD/shell.nix")
     fi
 
-    # Execute docker run
-    exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+    # X11 forwarding if enabled
+    if [[ "$X11_ENABLED" == true ]]; then
+        docker_args+=(-v "/tmp/.X11-unix:/tmp/.X11-unix:rw")
+        docker_args+=(-e "DISPLAY=$DISPLAY")
+
+        # Mount host fonts for GUI applications
+        if [[ -d "/usr/share/fonts" ]]; then
+            docker_args+=(-v "/usr/share/fonts:/usr/share/fonts:ro")
+        fi
+        if [[ -d "$HOME/.local/share/fonts" ]]; then
+            docker_args+=(-v "$HOME/.local/share/fonts:/home/claude/.local/share/fonts:ro")
+        fi
+        if [[ -d "$HOME/.fonts" ]]; then
+            docker_args+=(-v "$HOME/.fonts:/home/claude/.fonts:ro")
+        fi
+        # Mount fontconfig cache for faster font loading
+        if [[ -d "/var/cache/fontconfig" ]]; then
+            docker_args+=(-v "/var/cache/fontconfig:/var/cache/fontconfig:ro")
+        fi
+    fi
+
+    # Determine the command to run in the container
+    if [[ "$SHELL_MODE" == true ]]; then
+        # Shell mode: launch interactive bash
+        exec docker run "${docker_args[@]}" "$IMAGE_NAME" bash
+    elif [[ ${#EXEC_COMMAND[@]} -gt 0 ]]; then
+        # Exec mode: run specified command
+        exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${EXEC_COMMAND[@]}"
+    else
+        # Default: run Claude Code with any passed arguments
+        exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+    fi
 }
 
 ##############################################################################
@@ -722,6 +805,11 @@ main() {
         build_image
     else
         ensure_image
+    fi
+
+    # Validate X11 if enabled
+    if [[ "$X11_ENABLED" == true ]]; then
+        validate_x11
     fi
 
     # Run the container
