@@ -18,6 +18,9 @@
             # NOTE: claude-code is installed via npm for always-latest version
             # See entrypoint.sh for npm install command
 
+            # Shell with readline support (for arrow key history navigation)
+            bashInteractive
+
             # Core development tools
             nodejs_20         # Node.js 20 LTS (required for Claude Code)
             git               # Version control
