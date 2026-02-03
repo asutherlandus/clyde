@@ -638,6 +638,9 @@ run_container() {
     docker_args+=(-e "HOST_UID=$(id -u)")
     docker_args+=(-e "HOST_GID=$(id -g)")
 
+    # Pass terminal type for readline/arrow key support
+    docker_args+=(-e "TERM=${TERM:-xterm-256color}")
+
     # Mount Nix store volume for package caching
     docker_args+=(-v "$NIX_STORE_VOLUME:/nix")
 

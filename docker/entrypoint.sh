@@ -80,6 +80,21 @@ setup_user() {
         fi
     fi
 
+    # Setup basic shell configuration for readline (history navigation with up/down arrows)
+    if [[ ! -f /home/claude/.inputrc ]]; then
+        cat > /home/claude/.inputrc <<'EOF'
+# Arrow key history navigation
+"\e[A": previous-history
+"\e[B": next-history
+# Page up/down for history search (type prefix, then page up to find matches)
+"\e[5~": history-search-backward
+"\e[6~": history-search-forward
+# Case-insensitive tab completion
+set completion-ignore-case on
+EOF
+        chown "$HOST_UID:$HOST_GID" /home/claude/.inputrc
+    fi
+
     echo "$target_user"
 }
 
