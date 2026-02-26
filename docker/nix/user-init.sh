@@ -104,11 +104,9 @@ fi
 # Add npm global to PATH
 export PATH="${NPM_GLOBAL}/bin:\$PATH"
 # Install/update Claude Code via npm (cached in volume)
-echo "Checking Claude Code..." >&2
-if ! command -v claude &>/dev/null; then
-    echo "Installing Claude Code..." >&2
-    npm install -g @anthropic-ai/claude-code 2>&1 | grep -v "^npm" || true
-fi
+# Always run npm install to ensure latest version
+echo "Updating Claude Code..." >&2
+npm install -g @anthropic-ai/claude-code 2>&1 | grep -v "^npm" || true
 echo "Environment ready!" >&2
 exec "\$@"
 INNER
