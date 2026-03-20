@@ -686,6 +686,19 @@ run_container() {
     docker_args+=(-v "$PWD:$PWD")
     docker_args+=(-w "$PWD")
 
+    # Git worktree support: worktrees have a .git file pointing to the main
+    # repo's .git/worktrees/<name> directory. Mount the main repo's .git dir
+    # so that Nix flakes and other git operations can resolve the worktree.
+    if command -v git &>/dev/null && [[ -f "$PWD/.git" ]]; then
+        local git_common_dir
+        git_common_dir="$(git -C "$PWD" rev-parse --git-common-dir 2>/dev/null)" || true
+        if [[ -n "$git_common_dir" && -d "$git_common_dir" ]]; then
+            # Resolve to absolute path
+            git_common_dir="$(cd "$PWD" && cd "$git_common_dir" && pwd)"
+            docker_args+=(-v "$git_common_dir:$git_common_dir:ro")
+        fi
+    fi
+
     # Mount Claude credentials directory (create if missing)
     local claude_home="$HOME/.claude"
     if [[ ! -d "$claude_home" ]]; then
