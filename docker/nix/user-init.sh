@@ -95,6 +95,12 @@ activate_environment() {
 
     # Build the inner script that runs inside nix develop
     # Include base_path to ensure nodejs is available for claude
+    # Build browser PATH prefix if browser is enabled
+    local browser_path_prefix=""
+    if [[ "${CLYDE_BROWSER:-}" == "1" ]]; then
+        browser_path_prefix="$HOME/.clyde/bin:"
+    fi
+
     local inner_script
     inner_script=$(cat <<INNER
 # Add base packages to PATH (ensures nodejs is available for claude)
@@ -102,7 +108,7 @@ if [[ -n "$base_path" ]]; then
     export PATH="$base_path:\$PATH"
 fi
 # Add npm global to PATH
-export PATH="${NPM_GLOBAL}/bin:\$PATH"
+export PATH="${browser_path_prefix}${NPM_GLOBAL}/bin:\$PATH"
 # Install/update Claude Code via npm (cached in volume)
 # Always run npm install to ensure latest version
 echo "Updating Claude Code..." >&2
@@ -138,6 +144,25 @@ INNER
 # Main
 ##############################################################################
 
+##############################################################################
+# Browser Setup
+##############################################################################
+
+setup_browser() {
+    if [[ "${CLYDE_BROWSER:-}" == "1" ]]; then
+        # shellcheck source=/dev/null
+        source /docker/browser/setup-browser.sh
+        # Ensure the restored wrapper takes precedence over the disabled stub
+        export PATH="$HOME/.clyde/bin:$PATH"
+    fi
+    # When CLYDE_BROWSER is not set, the Dockerfile-installed stub at
+    # /usr/local/bin/agent-browser provides a clear "not enabled" message
+}
+
+##############################################################################
+# Main
+##############################################################################
+
 main() {
     # Setup Nix environment
     setup_nix_env
@@ -146,6 +171,9 @@ main() {
     if [[ "${CLYDE_NIX_GC:-0}" == "1" ]]; then
         run_garbage_collection
     fi
+
+    # Conditionally activate browser support
+    setup_browser
 
     # Activate environment and run command
     activate_environment "$@"

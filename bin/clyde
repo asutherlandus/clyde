@@ -12,6 +12,8 @@ DOCKER_DIR="${CLYDE_DOCKER_DIR:-$SCRIPT_DIR/../docker}"
 # Default resource limits (can be overridden via environment or flags)
 MEMORY_LIMIT="${CLYDE_MEMORY:-8g}"
 CPU_LIMIT="${CLYDE_CPUS:-4}"
+MEMORY_SET_BY_USER=false
+CPU_SET_BY_USER=false
 
 # Profile management
 PROFILES_DIR="$HOME/.claude/profiles"
@@ -31,6 +33,7 @@ LIST_PACKAGES=false
 # Container debugging options
 SHELL_MODE="${CLYDE_SHELL:-false}"
 X11_ENABLED="${CLYDE_X11:-false}"
+BROWSER_ENABLED="${CLYDE_BROWSER:-false}"
 EXEC_COMMAND=()
 
 # Arguments to pass to Claude Code
@@ -57,6 +60,7 @@ Options:
     --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
     --shell                Launch interactive bash shell instead of Claude Code
     --x11                  Enable X11 forwarding for graphical applications
+    --browser              Enable browser automation (agent-browser + Chrome, 16GB/8CPU defaults)
     --exec <COMMAND>       Execute a command in the container and exit
     -h, --help             Display this help message
     -v, --version          Display version information
@@ -85,6 +89,7 @@ Environment Variables:
     CLYDE_NPM_CACHE_VOLUME Named Docker volume for npm global (default: clyde-npm-cache)
     CLYDE_SHELL            If set to true/1, launch shell instead of Claude Code
     CLYDE_X11              If set to true/1, enable X11 forwarding
+    CLYDE_BROWSER          If set to true/1, enable browser automation
 
 Nix Configuration:
     Project-specific: Place flake.nix or shell.nix in your project root
@@ -103,6 +108,8 @@ Examples:
     clyde --x11 --shell             Shell with X11 forwarding
     clyde --exec cargo test         Run command in container and exit
     clyde --x11 --exec xclock       Run graphical app in container
+    clyde --browser                 Enable browser-based web app testing
+    clyde --browser --memory 32g    Browser with custom memory limit
 
 Profile Examples:
     clyde --add-profile pro         Create 'pro' profile with OAuth token
@@ -467,6 +474,7 @@ parse_args() {
                 fi
                 validate_memory_limit "$2"
                 MEMORY_LIMIT="$2"
+                MEMORY_SET_BY_USER=true
                 shift 2
                 ;;
             --cpus)
@@ -475,6 +483,7 @@ parse_args() {
                 fi
                 validate_cpu_limit "$2"
                 CPU_LIMIT="$2"
+                CPU_SET_BY_USER=true
                 shift 2
                 ;;
             --build)
@@ -536,6 +545,10 @@ parse_args() {
                 ;;
             --x11)
                 X11_ENABLED=true
+                shift
+                ;;
+            --browser)
+                BROWSER_ENABLED=true
                 shift
                 ;;
             --exec)
@@ -626,6 +639,16 @@ run_container() {
 
     # Remove container after exit
     docker_args+=(--rm)
+
+    # Override resource defaults for browser mode (16GB/8CPU) unless user specified
+    if [[ "$BROWSER_ENABLED" == true ]]; then
+        if [[ "$MEMORY_SET_BY_USER" == false ]]; then
+            MEMORY_LIMIT="16g"
+        fi
+        if [[ "$CPU_SET_BY_USER" == false ]]; then
+            CPU_LIMIT="8"
+        fi
+    fi
 
     # Resource limits
     docker_args+=(--memory="$MEMORY_LIMIT")
@@ -787,6 +810,12 @@ run_container() {
         if [[ -d "/var/cache/fontconfig" ]]; then
             docker_args+=(-v "/var/cache/fontconfig:/var/cache/fontconfig:ro")
         fi
+    fi
+
+    # Browser support if enabled
+    if [[ "$BROWSER_ENABLED" == true ]]; then
+        docker_args+=(-e "CLYDE_BROWSER=1")
+        docker_args+=(-v "clyde-browser-cache:/home/claude/.cache/ms-playwright")
     fi
 
     # Determine the command to run in the container

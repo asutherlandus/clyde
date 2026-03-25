@@ -11,6 +11,8 @@ Clyde is a Docker-based isolated environment for running Claude Code. It provide
 - Named Docker volume `clyde-nix-store` for /nix persistence (003-nix-dependencies)
 - Bash 5.x (clyde script), Ubuntu 24.04 (container) + Docker 24+, X11 (optional, for `--x11`) (004-container-debug)
 - N/A (no persistent state changes) (004-container-debug)
+- Bash 5.x (launch script, entrypoint), Dockerfile + agent-browser (npm, ships prebuilt Rust binary), Chrome for Testing (via `agent-browser install --with-deps`) (005-agent-browser)
+- Named Docker volume `clyde-browser-cache` for `~/.cache/ms-playwright/` persistence (005-agent-browser)
 
 | Component | Technology | Version |
 |-----------|------------|---------|
@@ -125,6 +127,7 @@ Profile names are validated to prevent path traversal attacks. Only alphanumeric
 - Dockerfile pins all package versions and base image digest for reproducibility
 
 ## Recent Changes
+- 005-agent-browser: Added Bash 5.x (launch script, entrypoint), Dockerfile + agent-browser (npm, ships prebuilt Rust binary), Chrome for Testing (via `agent-browser install --with-deps`)
 - 004-container-debug: Added Bash 5.x (clyde script), Ubuntu 24.04 (container) + Docker 24+, X11 (optional, for `--x11`)
 - 003-nix-dependencies: Complete implementation of Nix-based dependency management
   - Hybrid approach: Nix for project dependencies, npm for always-latest Claude Code
@@ -132,7 +135,6 @@ Profile names are validated to prevent path traversal attacks. Only alphanumeric
   - Project and user Nix configuration support (flake.nix, shell.nix)
   - New flags: --nix-verbose, --nix-gc, --list-packages
 
-- 001-docker-claude: Initial implementation of Docker container for Claude Code
 
 <!-- MANUAL ADDITIONS START -->
 <!-- Add project-specific notes below this line -->

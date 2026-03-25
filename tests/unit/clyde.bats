@@ -425,3 +425,185 @@ EOF
     [[ "$output" =~ "--exec" ]]
     [[ "$output" =~ "Execute a command" ]]
 }
+
+##############################################################################
+# Browser Mode Tests
+##############################################################################
+
+@test "clyde --browser flag is parsed correctly" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+# Echo all args to check for CLYDE_BROWSER
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    # Create a temp project directory
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "CLYDE_BROWSER=1" ]]
+}
+
+@test "clyde --browser default is disabled" {
+    # Create mock docker that captures arguments
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\""
+    [ "$status" -eq 0 ]
+    # CLYDE_BROWSER should NOT appear in args
+    [[ ! "$output" =~ "CLYDE_BROWSER" ]]
+}
+
+@test "clyde --browser overrides default memory to 16g" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "--memory=16g" ]]
+    [[ "$output" =~ "--cpus=8" ]]
+}
+
+@test "clyde --browser respects user --memory override" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser --memory 32g"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "--memory=32g" ]]
+}
+
+@test "clyde --browser respects user --cpus override" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser --cpus 4"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "--cpus=4" ]]
+}
+
+@test "clyde --browser combined with --x11 works" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    DISPLAY=:0 run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser --x11"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "CLYDE_BROWSER=1" ]]
+    [[ "$output" =~ "/tmp/.X11-unix" ]]
+}
+
+@test "clyde --browser combined with --shell works" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser --shell"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "CLYDE_BROWSER=1" ]]
+}
+
+@test "clyde --browser mounts browser cache volume" {
+    mkdir -p "$TEST_TMPDIR/mocks"
+    cat > "$TEST_TMPDIR/mocks/docker" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "info" ]] || [[ "$1" == "image" ]]; then
+    exit 0
+fi
+echo "ARGS=$*"
+exit 0
+EOF
+    chmod +x "$TEST_TMPDIR/mocks/docker"
+    export PATH="$TEST_TMPDIR/mocks:$PATH"
+
+    mkdir -p "$TEST_TMPDIR/project"
+
+    run bash -c "cd \"$TEST_TMPDIR/project\" && HOME=\"$TEST_TMPDIR\" \"$CLYDE_SCRIPT\" --browser"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "clyde-browser-cache:/home/claude/.cache/ms-playwright" ]]
+}
+
+@test "help includes --browser option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--browser" ]]
+    [[ "$output" =~ "browser automation" ]]
+}
+
+@test "help includes CLYDE_BROWSER environment variable" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "CLYDE_BROWSER" ]]
+}
