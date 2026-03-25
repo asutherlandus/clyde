@@ -130,6 +130,11 @@ main() {
     setup_nix_ownership
     setup_npm_global
 
+    # Ensure .cache directory exists with correct ownership
+    # (Docker volume mounts can create parent dirs as root)
+    mkdir -p /home/claude/.cache
+    chown "$HOST_UID:$HOST_GID" /home/claude/.cache
+
     # Export environment variables for the user script
     export HOME=/home/claude
     export CLYDE_NIX_VERBOSE
@@ -139,6 +144,7 @@ main() {
     export CLYDE_PROJECT_SHELL="${CLYDE_PROJECT_SHELL:-}"
     export CLYDE_USER_FLAKE="${CLYDE_USER_FLAKE:-}"
     export CLYDE_USER_SHELL="${CLYDE_USER_SHELL:-}"
+    export CLYDE_BROWSER="${CLYDE_BROWSER:-}"
 
     # Execute the user script as the target user
     exec gosu "$target_user" /docker/nix/user-init.sh "$@"

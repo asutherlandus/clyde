@@ -50,7 +50,26 @@ RUN chmod +x /docker/nix/clyde-packages /docker/nix/user-init.sh && \
     ln -s /docker/nix/clyde-packages /usr/local/bin/clyde-packages && \
     /root/.nix-profile/bin/nix flake lock /docker/nix
 
-# Layer 5: Copy entrypoint and browser wrapper scripts
+# Layer 5: Install agent-browser and Chrome for Testing
+# agent-browser is a Rust-based headless browser CLI distributed via npm
+# Node.js/npm lives inside the Nix devShell, so we use `nix develop` to access it
+# We set npm prefix to /usr/local so the binary lands on the default PATH
+# Chrome for Testing is downloaded via agent-browser install --with-deps
+ARG AGENT_BROWSER_VERSION=0.22.3
+RUN --mount=type=cache,target=/root/.npm \
+    /root/.nix-profile/bin/nix develop /docker/nix --command bash -c "\
+        npm install -g --prefix /usr/local agent-browser@${AGENT_BROWSER_VERSION} && \
+        export PATH=/usr/local/bin:\$PATH && \
+        agent-browser install --with-deps" && \
+    rm -rf /var/lib/apt/lists/*
+
+# Layer 6: Copy browser configuration and skill definition
+COPY browser/ /docker/browser/
+COPY skills/ /docker/skills/
+RUN chmod +x /docker/browser/setup-browser.sh /docker/browser/agent-browser-disabled.sh && \
+    ln -sf /docker/browser/agent-browser-disabled.sh /usr/local/bin/agent-browser
+
+# Layer 7: Copy entrypoint and browser wrapper scripts
 COPY entrypoint.sh /entrypoint.sh
 COPY open-url.sh /usr/local/bin/open-url
 RUN chmod +x /entrypoint.sh /usr/local/bin/open-url
