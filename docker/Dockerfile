@@ -60,8 +60,15 @@ RUN --mount=type=cache,target=/root/.npm \
     /root/.nix-profile/bin/nix develop /docker/nix --command bash -c "\
         npm install -g --prefix /usr/local agent-browser@${AGENT_BROWSER_VERSION} && \
         export PATH=/usr/local/bin:\$PATH && \
-        agent-browser install --with-deps" && \
-    rm -rf /var/lib/apt/lists/*
+        agent-browser install" && \
+    mv /root/.agent-browser/browsers /opt/browsers && \
+    chmod -R o+rx /opt/browsers && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0t64 libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+        libdbus-1-3 libcups2t64 libexpat1 libxcb1 libxkbcommon0 libasound2t64 \
+        libgbm1 libx11-6 libxext6 libcairo2 libpango-1.0-0 libxcomposite1 \
+        libxdamage1 libxfixes3 libxrandr2 libatspi2.0-0t64 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
 
 # Layer 6: Copy browser configuration and skill definition
 COPY browser/ /docker/browser/

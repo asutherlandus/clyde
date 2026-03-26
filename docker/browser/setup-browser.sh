@@ -23,8 +23,21 @@ restore_agent_browser() {
         # Note: $HOME/.local/bin may be read-only (host mount), so use $HOME/.clyde/bin
         local wrapper_dir="$HOME/.clyde/bin"
         mkdir -p "$wrapper_dir"
+
+        # Find the Chrome binary path
+        local chrome_bin
+        chrome_bin=$(find /opt/browsers -name 'chrome' -type f 2>/dev/null | head -1)
+
+        # Create writable Chrome data directory
+        local chrome_tmp="/tmp/.chromium"
+        mkdir -p "$chrome_tmp"
+
         cat > "$wrapper_dir/agent-browser" <<WRAPPER
 #!/usr/bin/env bash
+# Writable dirs for Chrome config/cache (Chromium 128+ crashpad fix)
+export XDG_CONFIG_HOME="/tmp/.chromium"
+export XDG_CACHE_HOME="/tmp/.chromium"
+${chrome_bin:+export AGENT_BROWSER_EXECUTABLE_PATH="$chrome_bin"}
 exec "$real_bin" "\$@"
 WRAPPER
         chmod +x "$wrapper_dir/agent-browser"
@@ -33,6 +46,15 @@ WRAPPER
         echo "Rebuild the image: docker build -t clyde:local docker/" >&2
         return 1
     fi
+
+    # Link shared browser binaries into user's agent-browser directory
+    # Chrome was installed to /opt/browsers at build time (as root),
+    # agent-browser at runtime looks in ~/.agent-browser/browsers/
+    if [[ -d /opt/browsers ]]; then
+        mkdir -p "$HOME/.agent-browser"
+        ln -sfn /opt/browsers "$HOME/.agent-browser/browsers"
+    fi
+
 }
 
 check_browser_cache() {
