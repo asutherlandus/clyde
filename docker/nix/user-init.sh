@@ -79,14 +79,24 @@ activate_environment() {
         config_type="default"
     fi
 
+    # Use browser devShell when browser mode is enabled and using default config
+    local nix_devshell=""
+    if [[ "${CLYDE_BROWSER:-}" == "1" ]] && [[ "$config_type" == "default" ]]; then
+        nix_devshell="browser"
+    fi
+
     echo "Loading $config_type environment..." >&2
 
     # For non-default configs, first get the base environment PATH
     # This ensures nodejs (required for claude) is always available
     local base_path=""
     if [[ "$config_type" != "default" ]]; then
+        local base_ref="/docker/nix"
+        if [[ -n "$nix_devshell" ]]; then
+            base_ref="/docker/nix#${nix_devshell}"
+        fi
         echo "Including base packages (nodejs, git, gh)..." >&2
-        base_path=$(nix develop /docker/nix --quiet --command bash -c 'echo $PATH' 2>/dev/null) || true
+        base_path=$(nix develop "$base_ref" --quiet --command bash -c 'echo $PATH' 2>/dev/null) || true
     fi
 
     # Build the nix command
@@ -124,7 +134,11 @@ INNER
         nix_args+=("--run" "bash -c '$inner_script' -- \"\$@\"")
     else
         nix_cmd="nix"
-        nix_args+=("develop" "$nix_config")
+        if [[ -n "$nix_devshell" ]]; then
+            nix_args+=("develop" "${nix_config}#${nix_devshell}")
+        else
+            nix_args+=("develop" "$nix_config")
+        fi
 
         # Add verbosity flags
         if [[ "${CLYDE_NIX_VERBOSE:-0}" == "1" ]]; then

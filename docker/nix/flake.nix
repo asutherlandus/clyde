@@ -35,6 +35,20 @@
             export CLYDE_ENV="base"
           '';
         };
+
+        devShells.browser = pkgs.mkShellNoCC {
+          name = "clyde-browser";
+
+          inputsFrom = [ self.devShells.${system}.default ];
+
+          packages = with pkgs; [
+            xvfb-run          # Virtual framebuffer for headless Chrome
+          ];
+
+          shellHook = ''
+            export CLYDE_ENV="browser"
+          '';
+        };
       }
     );
 }
