@@ -37,9 +37,8 @@ setup_nix_env() {
         source "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
     fi
 
-    # Add npm global to PATH
-    export PATH="${NPM_GLOBAL}/bin:$PATH"
-    export npm_config_prefix="$NPM_GLOBAL"
+    # Add Claude local bin to PATH
+    export PATH="${CLAUDE_LOCAL}/bin:$PATH"
 }
 
 ##############################################################################
@@ -117,12 +116,12 @@ activate_environment() {
 if [[ -n "$base_path" ]]; then
     export PATH="$base_path:\$PATH"
 fi
-# Add npm global to PATH
-export PATH="${browser_path_prefix}${NPM_GLOBAL}/bin:\$PATH"
-# Install/update Claude Code via npm (cached in volume)
-# Always run npm install to ensure latest version
+# Add Claude local bin to PATH
+export PATH="${browser_path_prefix}${CLAUDE_LOCAL}/bin:\$PATH"
+# Install/update Claude Code via native installer
+# Runs every startup to ensure latest version (fast when already current)
 echo "Updating Claude Code..." >&2
-npm install -g @anthropic-ai/claude-code 2>&1 | grep -v "^npm" || true
+curl -fsSL https://claude.ai/install.sh | bash 2>&1
 echo "Environment ready!" >&2
 exec "\$@"
 INNER

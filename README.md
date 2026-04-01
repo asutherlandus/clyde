@@ -310,10 +310,10 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.claude.json` | Read/Write | Onboarding state, theme, tips history (skips setup wizard) |
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
 | `$SSH_AUTH_SOCK` | Read-only | SSH agent socket for git operations (see below) |
-| `~/.local/bin` | Read-only | User-installed binaries (added to PATH) |
+| `~/.local/bin` | Read-only | User-installed binaries (mounted to separate path, added to PATH) |
 | `~/.config/clyde` | Read-only | User's global Nix packages (optional) |
 | `clyde-nix-store` (volume) | Read/Write | Nix package cache (persists across runs) |
-| `clyde-npm-cache` (volume) | Read/Write | Claude Code installation cache |
+| `clyde-claude-cache` (volume) | Read/Write | Claude Code installer data cache |
 
 **With `--x11` enabled:**
 
@@ -515,7 +515,7 @@ rm ~/.local/bin/clyde  # or wherever you installed it
 docker rmi clyde:local
 
 # Remove Nix package cache volumes
-docker volume rm clyde-nix-store clyde-npm-cache
+docker volume rm clyde-nix-store clyde-claude-cache
 
 # Optionally remove Claude credentials (shared with native Claude Code)
 # rm -rf ~/.claude  # WARNING: This logs you out of Claude Code everywhere

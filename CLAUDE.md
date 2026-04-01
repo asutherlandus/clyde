@@ -105,8 +105,8 @@ bats tests/
 3. **Resource Limits**: Default 8GB RAM, 4 CPUs; configurable via flags
 4. **Auto-build**: Script builds image on first run if missing
 5. **Nix Package Management**: Project dependencies managed via Nix flakes for reproducibility
-6. **Claude Code via npm**: Always-latest Claude Code installed via npm at runtime
-7. **Persistent Volumes**: `clyde-nix-store` for Nix cache, `clyde-npm-cache` for Claude Code
+6. **Claude Code via native installer**: Always-latest Claude Code installed via `claude.ai/install.sh` at runtime
+7. **Persistent Volumes**: `clyde-nix-store` for Nix cache, `clyde-claude-cache` for Claude Code
 
 ## Security Considerations
 

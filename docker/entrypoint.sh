@@ -12,7 +12,7 @@ HOST_UID="${HOST_UID:-1000}"
 HOST_GID="${HOST_GID:-1000}"
 CLYDE_NIX_VERBOSE="${CLYDE_NIX_VERBOSE:-0}"
 CLYDE_NIX_GC="${CLYDE_NIX_GC:-0}"
-NPM_GLOBAL="/home/claude/.npm-global"
+CLAUDE_LOCAL="/home/claude/.local"
 
 ##############################################################################
 # Validation
@@ -111,10 +111,12 @@ setup_nix_ownership() {
     fi
 }
 
-setup_npm_global() {
-    # Create npm global directory and set ownership
-    mkdir -p "$NPM_GLOBAL"
-    chown -R "$HOST_UID:$HOST_GID" "$NPM_GLOBAL"
+setup_claude_local() {
+    # Create directories for native Claude installer
+    # ~/.local/bin   - claude binary
+    # ~/.local/share/claude - downloaded versions (persisted via volume)
+    mkdir -p "$CLAUDE_LOCAL/bin" "$CLAUDE_LOCAL/share/claude"
+    chown -R "$HOST_UID:$HOST_GID" "$CLAUDE_LOCAL"
 }
 
 ##############################################################################
@@ -126,9 +128,9 @@ main() {
     local target_user
     target_user=$(setup_user)
 
-    # Setup Nix ownership and npm directory
+    # Setup Nix ownership and Claude local directories
     setup_nix_ownership
-    setup_npm_global
+    setup_claude_local
 
     # Ensure .cache directory exists with correct ownership
     # (Docker volume mounts can create parent dirs as root)
@@ -139,7 +141,7 @@ main() {
     export HOME=/home/claude
     export CLYDE_NIX_VERBOSE
     export CLYDE_NIX_GC
-    export NPM_GLOBAL
+    export CLAUDE_LOCAL
     export CLYDE_PROJECT_FLAKE="${CLYDE_PROJECT_FLAKE:-}"
     export CLYDE_PROJECT_SHELL="${CLYDE_PROJECT_SHELL:-}"
     export CLYDE_USER_FLAKE="${CLYDE_USER_FLAKE:-}"

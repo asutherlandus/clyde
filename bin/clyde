@@ -21,7 +21,7 @@ PROFILE="${CLYDE_PROFILE:-}"
 
 # Nix-related configuration
 NIX_STORE_VOLUME="${CLYDE_NIX_STORE_VOLUME:-clyde-nix-store}"
-NPM_CACHE_VOLUME="${CLYDE_NPM_CACHE_VOLUME:-clyde-npm-cache}"
+CLAUDE_CACHE_VOLUME="${CLYDE_CLAUDE_CACHE_VOLUME:-clyde-claude-cache}"
 NIX_VERBOSE="${CLYDE_NIX_VERBOSE:-0}"
 
 # Flags
@@ -51,7 +51,7 @@ usage() {
 Usage: clyde [OPTIONS] [-- CLAUDE_ARGS...]
 
 Launch Claude Code in an isolated Docker container with the current directory mounted.
-Packages are managed via Nix for reproducibility; Claude Code is always latest via npm.
+Packages are managed via Nix for reproducibility; Claude Code is always latest via native installer.
 
 Options:
     --memory <SIZE>        Container memory limit (default: 8g)
@@ -86,7 +86,7 @@ Environment Variables:
     CLYDE_DOCKER_DIR       Path to docker directory (default: script_dir/../docker)
     CLYDE_NIX_VERBOSE      Show full Nix output if set to 1
     CLYDE_NIX_STORE_VOLUME Named Docker volume for /nix (default: clyde-nix-store)
-    CLYDE_NPM_CACHE_VOLUME Named Docker volume for npm global (default: clyde-npm-cache)
+    CLYDE_CLAUDE_CACHE_VOLUME Named Docker volume for Claude installer data (default: clyde-claude-cache)
     CLYDE_SHELL            If set to true/1, launch shell instead of Claude Code
     CLYDE_X11              If set to true/1, enable X11 forwarding
     CLYDE_BROWSER          If set to true/1, enable browser automation
@@ -616,7 +616,7 @@ list_available_packages() {
     fi
 
     echo "Default packages (always available):"
-    echo "  - claude (Claude Code CLI - latest via npm)"
+    echo "  - claude (Claude Code CLI - latest via native installer)"
     echo "  - node / npm (Node.js 20 LTS)"
     echo "  - git (version control)"
     echo "  - gh (GitHub CLI)"
@@ -670,8 +670,8 @@ run_container() {
     # Mount Nix store volume for package caching
     docker_args+=(-v "$NIX_STORE_VOLUME:/nix")
 
-    # Mount npm cache volume for Claude Code installation
-    docker_args+=(-v "$NPM_CACHE_VOLUME:/home/claude/.npm-global")
+    # Mount Claude cache volume for native installer data persistence
+    docker_args+=(-v "$CLAUDE_CACHE_VOLUME:/home/claude/.local/share/claude")
 
     # Pass Nix-related environment variables
     docker_args+=(-e "CLYDE_NIX_VERBOSE=$NIX_VERBOSE")
@@ -763,10 +763,12 @@ run_container() {
         docker_args+=(-v "$HOME/.config/gh:/home/claude/.config/gh:ro")
     fi
 
-    # Mount user's local bin directory for additional tools
+    # Mount user's local bin directory for additional host tools
+    # Mounted to a separate path to avoid conflicting with the native Claude installer
+    # which writes to ~/.local/bin inside the container
     if [[ -d "$HOME/.local/bin" ]]; then
-        docker_args+=(-v "$HOME/.local/bin:/home/claude/.local/bin:ro")
-        docker_args+=(-e "PATH=/home/claude/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        docker_args+=(-v "$HOME/.local/bin:/home/claude/.host-local-bin:ro")
+        docker_args+=(-e "PATH=/home/claude/.host-local-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
     fi
 
     # Mount user's Nix configuration directory if exists
