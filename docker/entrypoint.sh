@@ -147,6 +147,7 @@ main() {
     export CLYDE_USER_FLAKE="${CLYDE_USER_FLAKE:-}"
     export CLYDE_USER_SHELL="${CLYDE_USER_SHELL:-}"
     export CLYDE_BROWSER="${CLYDE_BROWSER:-}"
+    export CLYDE_AGENT_MODE="${CLYDE_AGENT_MODE:-pi}"
 
     # Execute the user script as the target user
     exec gosu "$target_user" /docker/nix/user-init.sh "$@"
