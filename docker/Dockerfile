@@ -87,6 +87,7 @@ WORKDIR /workspace
 # Use tini as init process for proper signal handling
 ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
 
-# Default command: launch Claude Code with skip-permissions
+# Default command: launch pi coding agent
+# Use --claude flag in clyde to switch to Claude Code
 # Container isolation provides the security boundary
-CMD ["claude", "--dangerously-skip-permissions"]
+CMD ["pi"]

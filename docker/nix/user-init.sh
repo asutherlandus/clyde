@@ -112,16 +112,20 @@ activate_environment() {
 
     local inner_script
     inner_script=$(cat <<INNER
-# Add base packages to PATH (ensures nodejs is available for claude)
+# Add base packages to PATH (ensures nodejs is available)
 if [[ -n "$base_path" ]]; then
     export PATH="$base_path:\$PATH"
 fi
 # Add Claude local bin to PATH
 export PATH="${browser_path_prefix}${CLAUDE_LOCAL}/bin:\$PATH"
-# Install/update Claude Code via native installer
-# Runs every startup to ensure latest version (fast when already current)
-echo "Updating Claude Code..." >&2
-curl -fsSL https://claude.ai/install.sh | bash 2>&1
+# Install agent based on mode
+if [[ "${CLYDE_AGENT_MODE:-pi}" == "claude" ]]; then
+    echo "Updating Claude Code..." >&2
+    curl -fsSL https://claude.ai/install.sh | bash 2>&1
+else
+    echo "Installing/updating pi..." >&2
+    npm install -g @mariozechner/pi-coding-agent 2>&1
+fi
 echo "Environment ready!" >&2
 exec "\$@"
 INNER

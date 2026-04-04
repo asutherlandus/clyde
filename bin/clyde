@@ -36,7 +36,10 @@ X11_ENABLED="${CLYDE_X11:-false}"
 BROWSER_ENABLED="${CLYDE_BROWSER:-false}"
 EXEC_COMMAND=()
 
-# Arguments to pass to Claude Code
+# Agent mode: pi (default) or claude
+AGENT_MODE="${CLYDE_AGENT_MODE:-pi}"
+
+# Arguments to pass to the agent (pi or claude)
 CLAUDE_ARGS=()
 
 # Cleanup tracking
@@ -61,6 +64,7 @@ Options:
     --shell                Launch interactive bash shell instead of Claude Code
     --x11                  Enable X11 forwarding for graphical applications
     --browser              Enable browser automation (agent-browser + Chrome, 16GB/8CPU defaults)
+    --claude               Use Claude Code instead of pi (default agent)
     --exec <COMMAND>       Execute a command in the container and exit
     -h, --help             Display this help message
     -v, --version          Display version information
@@ -90,6 +94,7 @@ Environment Variables:
     CLYDE_SHELL            If set to true/1, launch shell instead of Claude Code
     CLYDE_X11              If set to true/1, enable X11 forwarding
     CLYDE_BROWSER          If set to true/1, enable browser automation
+    CLYDE_AGENT_MODE       Agent to use: pi (default) or claude
 
 Nix Configuration:
     Project-specific: Place flake.nix or shell.nix in your project root
@@ -551,6 +556,10 @@ parse_args() {
                 BROWSER_ENABLED=true
                 shift
                 ;;
+            --claude)
+                AGENT_MODE=claude
+                shift
+                ;;
             --exec)
                 shift
                 if [[ $# -eq 0 ]]; then
@@ -672,6 +681,9 @@ run_container() {
 
     # Mount Claude cache volume for native installer data persistence
     docker_args+=(-v "$CLAUDE_CACHE_VOLUME:/home/claude/.local/share/claude")
+
+    # Pass agent mode
+    docker_args+=(-e "CLYDE_AGENT_MODE=$AGENT_MODE")
 
     # Pass Nix-related environment variables
     docker_args+=(-e "CLYDE_NIX_VERBOSE=$NIX_VERBOSE")
@@ -828,8 +840,14 @@ run_container() {
         # Exec mode: run specified command
         exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${EXEC_COMMAND[@]}"
     else
-        # Default: run Claude Code with any passed arguments
-        exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${CLAUDE_ARGS[@]}"
+        # Default: run the configured agent with any passed arguments
+        local agent_cmd=()
+        if [[ "$AGENT_MODE" == "claude" ]]; then
+            agent_cmd=("claude" "--dangerously-skip-permissions")
+        else
+            agent_cmd=("pi")
+        fi
+        exec docker run "${docker_args[@]}" "$IMAGE_NAME" "${agent_cmd[@]}" "${CLAUDE_ARGS[@]}"
     fi
 }
 
