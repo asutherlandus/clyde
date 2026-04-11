@@ -118,13 +118,17 @@ if [[ -n "$base_path" ]]; then
 fi
 # Add Claude local bin to PATH
 export PATH="${browser_path_prefix}${CLAUDE_LOCAL}/bin:\$PATH"
+# Set npm global prefix to user-writable location (Nix store is read-only)
+export NPM_CONFIG_PREFIX="\$HOME/.npm-global"
+export PATH="\$HOME/.npm-global/bin:\$PATH"
+export NODE_PATH="\$HOME/.npm-global/lib/node_modules:\${NODE_PATH:-}"
 # Install agent based on mode
 if [[ "${CLYDE_AGENT_MODE:-pi}" == "claude" ]]; then
     echo "Updating Claude Code..." >&2
     curl -fsSL https://claude.ai/install.sh | bash 2>&1
 else
     echo "Installing/updating pi..." >&2
-    npm install -g @mariozechner/pi-coding-agent 2>&1
+    npm install -g @mariozechner/pi-coding-agent smol-toml yaml 2>&1
 fi
 echo "Environment ready!" >&2
 exec "\$@"
