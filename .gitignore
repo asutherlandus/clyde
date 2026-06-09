@@ -36,3 +36,6 @@ secrets/
 *.log
 tmp/
 temp/
+
+# agent-browser local state
+agent-browser.json
