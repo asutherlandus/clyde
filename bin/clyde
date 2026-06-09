@@ -752,6 +752,12 @@ run_container() {
         docker_args+=(-v "$claude_json:/home/claude/.claude.json")
     fi
 
+    # Mount pi credentials directory (for pi agent mode authentication)
+    local pi_home="$HOME/.pi"
+    if [[ -d "$pi_home" ]]; then
+        docker_args+=(-v "$pi_home:/home/claude/.pi")
+    fi
+
     # Mount git config and forward SSH agent unless --no-git
     # Security: We forward SSH_AUTH_SOCK instead of mounting ~/.ssh directly
     # This keeps private keys on the host; only the agent socket is exposed
