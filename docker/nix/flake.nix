@@ -28,7 +28,9 @@
 
             # Common utilities
             curl              # HTTP client
+            just              # Command runner
             openssh           # SSH client
+            tmux              # Terminal multiplexer
           ];
 
           shellHook = ''
