@@ -128,7 +128,11 @@ if [[ "${CLYDE_AGENT_MODE:-pi}" == "claude" ]]; then
     curl -fsSL https://claude.ai/install.sh | bash 2>&1
 else
     echo "Installing/updating pi..." >&2
-    npm install -g @mariozechner/pi-coding-agent smol-toml yaml 2>&1
+    npm install -g @earendil-works/pi-coding-agent smol-toml yaml 2>&1
+    # Register the MCP adapter as a pi extension (pi's own installer wires it
+    # into ~/.pi/; a plain npm install would not register the extension).
+    echo "Installing/updating pi-mcp-adapter extension..." >&2
+    pi install npm:pi-mcp-adapter 2>&1 || echo "Warning: pi-mcp-adapter install failed" >&2
 fi
 echo "Environment ready!" >&2
 exec "\$@"
