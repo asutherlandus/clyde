@@ -2,7 +2,7 @@
   description = "Clyde base environment - default packages for Claude Code";
 
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -22,7 +22,7 @@
             bashInteractive
 
             # Core development tools
-            nodejs_20         # Node.js 20 LTS (required for Claude Code)
+            nodejs_22         # Node.js 22 LTS (pi requires >= 22.19.0; nixos-25.05 ships 22.20)
             git               # Version control
             gh                # GitHub CLI
 

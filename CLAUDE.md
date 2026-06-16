@@ -18,7 +18,7 @@ Clyde is a Docker-based isolated environment for running Claude Code. It provide
 |-----------|------------|---------|
 | Launch Script | Bash | 5.x |
 | Container | Docker | 24+ |
-| Runtime | Node.js | 20 LTS |
+| Runtime | Node.js | 22 LTS |
 | CLI Tool | Claude Code | @anthropic-ai/claude-code |
 | Base Image | Ubuntu | 24.04 |
 
