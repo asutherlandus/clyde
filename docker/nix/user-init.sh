@@ -134,6 +134,9 @@ else
     echo "Installing/updating pi-mcp-adapter extension..." >&2
     pi install npm:pi-mcp-adapter 2>&1 || echo "Warning: pi-mcp-adapter install failed" >&2
 fi
+# Install always-available global tools (independent of agent mode)
+echo "Installing/updating global tools (beads, openspec)..." >&2
+npm install -g @beads/bd @fission-ai/openspec@latest 2>&1 || echo "Warning: global tools install failed" >&2
 echo "Environment ready!" >&2
 exec "\$@"
 INNER
