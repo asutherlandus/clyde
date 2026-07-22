@@ -146,6 +146,23 @@ EOF
     [[ "$output" =~ "--no-git" ]]
 }
 
+@test "help includes --mount option" {
+    run "$CLYDE_SCRIPT" --help
+    [[ "$output" =~ "--mount" ]]
+}
+
+@test "clyde --mount requires a directory value" {
+    run "$CLYDE_SCRIPT" --mount
+    [ "$status" -eq 4 ]
+    [[ "$output" =~ "requires a directory" ]]
+}
+
+@test "clyde --mount rejects a nonexistent directory" {
+    run "$CLYDE_SCRIPT" --mount /nonexistent/path/xyz
+    [ "$status" -eq 5 ]
+    [[ "$output" =~ "does not exist" ]]
+}
+
 @test "help includes CLYDE_MEMORY environment variable" {
     run "$CLYDE_SCRIPT" --help
     [[ "$output" =~ "CLYDE_MEMORY" ]]
