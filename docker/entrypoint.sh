@@ -137,6 +137,13 @@ main() {
     mkdir -p /home/claude/.cache
     chown "$HOST_UID:$HOST_GID" /home/claude/.cache
 
+    # If a GPG home was mounted for agent forwarding, Docker created it as root.
+    # gpg refuses a home dir it does not own, so fix ownership and permissions.
+    if [[ -d /home/claude/.gnupg ]]; then
+        chown "$HOST_UID:$HOST_GID" /home/claude/.gnupg 2>/dev/null || true
+        chmod 700 /home/claude/.gnupg 2>/dev/null || true
+    fi
+
     # Export environment variables for the user script
     export HOME=/home/claude
     export CLYDE_NIX_VERBOSE
