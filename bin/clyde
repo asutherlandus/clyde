@@ -24,6 +24,10 @@ NIX_STORE_VOLUME="${CLYDE_NIX_STORE_VOLUME:-clyde-nix-store}"
 CLAUDE_CACHE_VOLUME="${CLYDE_CLAUDE_CACHE_VOLUME:-clyde-claude-cache}"
 NIX_VERBOSE="${CLYDE_NIX_VERBOSE:-0}"
 
+# Mount directory (defaults to $PWD; --mount lets you mount a parent dir
+# while keeping the working directory at $PWD)
+MOUNT_DIR="${CLYDE_MOUNT:-}"
+
 # Flags
 FORCE_BUILD=false
 NO_GIT="${CLYDE_NO_GIT:-}"
@@ -61,6 +65,9 @@ Options:
     --cpus <NUM>           Container CPU limit (default: 4)
     --build                Force rebuild of the Docker image
     --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
+    --mount <DIR>          Mount DIR instead of the current dir (must contain \$PWD;
+                           working directory stays at \$PWD). Useful to expose a
+                           parent dir while launching from a subdirectory.
     --shell                Launch interactive bash shell instead of Claude Code
     --x11                  Enable X11 forwarding for graphical applications
     --browser              Enable browser automation (agent-browser + Chrome, 16GB/8CPU defaults)
@@ -85,6 +92,7 @@ Environment Variables:
     CLYDE_MEMORY           Default memory limit (overridden by --memory)
     CLYDE_CPUS             Default CPU limit (overridden by --cpus)
     CLYDE_NO_GIT           If set to 1, skip git/SSH mounts
+    CLYDE_MOUNT            Directory to mount (overridden by --mount)
     CLYDE_IMAGE            Custom image name (default: clyde:local)
     CLYDE_PROFILE          Default profile to use (overridden by --profile)
     CLYDE_DOCKER_DIR       Path to docker directory (default: script_dir/../docker)
@@ -106,6 +114,7 @@ Examples:
     clyde --memory 16g --cpus 8     Custom resource limits
     clyde --build                   Force rebuild the image
     clyde -- --resume               Pass --resume to Claude Code
+    clyde --mount ..                Mount parent dir, work in current subdir
     clyde --nix-verbose             Debug Nix environment setup
     clyde --nix-gc                  Clean up unused Nix packages
     clyde --list-packages           Preview available packages
@@ -431,6 +440,32 @@ EOF
     fi
 }
 
+# Resolve MOUNT_DIR to an absolute path and ensure $PWD lives inside it.
+# Defaults to $PWD when --mount / CLYDE_MOUNT is not set.
+resolve_mount_dir() {
+    if [[ -z "$MOUNT_DIR" ]]; then
+        MOUNT_DIR="$PWD"
+        return
+    fi
+
+    if [[ ! -d "$MOUNT_DIR" ]]; then
+        error "Mount directory '$MOUNT_DIR' does not exist or is not a directory" 5
+    fi
+
+    # Canonicalize to an absolute path (matches git_common_dir resolution style)
+    MOUNT_DIR="$(cd "$MOUNT_DIR" && pwd)"
+
+    if [[ "$MOUNT_DIR" == "/" ]]; then
+        error "Refusing to mount the root filesystem (/). Choose a narrower --mount directory." 5
+    fi
+
+    # The working directory ($PWD) must be within the mounted tree, otherwise
+    # the container's -w path would not exist inside the mount.
+    if [[ "$PWD" != "$MOUNT_DIR" && "$PWD" != "$MOUNT_DIR"/* ]]; then
+        error "Current directory '$PWD' is not inside mount directory '$MOUNT_DIR'" 5
+    fi
+}
+
 ##############################################################################
 # Image Management
 ##############################################################################
@@ -498,6 +533,13 @@ parse_args() {
             --no-git)
                 NO_GIT=1
                 shift
+                ;;
+            --mount)
+                if [[ -z "${2:-}" ]]; then
+                    error "Option --mount requires a directory" 4
+                fi
+                MOUNT_DIR="$2"
+                shift 2
                 ;;
             --nix-verbose)
                 NIX_VERBOSE=1
@@ -720,8 +762,10 @@ run_container() {
         fi
     fi
 
-    # Mount current working directory at the same path inside container
-    docker_args+=(-v "$PWD:$PWD")
+    # Mount the mount directory (defaults to $PWD) at the same path inside the
+    # container, but keep the working directory at $PWD. --mount lets you expose
+    # a parent directory while launching from a subdirectory.
+    docker_args+=(-v "$MOUNT_DIR:$MOUNT_DIR")
     docker_args+=(-w "$PWD")
 
     # Git worktree support: worktrees have a .git file pointing to the main
@@ -873,6 +917,7 @@ main() {
     # Validation checks
     check_docker
     check_working_directory
+    resolve_mount_dir
 
     # Image management
     if [[ "$FORCE_BUILD" == true ]]; then
