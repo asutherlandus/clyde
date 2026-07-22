@@ -310,6 +310,8 @@ export CLYDE_PROFILE=pro  # Default profile to use
 | `~/.claude.json` | Read/Write | Onboarding state, theme, tips history (skips setup wizard) |
 | `~/.gitconfig` | Read-only | Your git user.name, user.email, etc. |
 | `$SSH_AUTH_SOCK` | Read-only | SSH agent socket for git operations (see below) |
+| gpg-agent socket | Read/Write | Restricted (extra) socket for GPG commit signing (see below) |
+| `~/.gnupg/pubring.kbx`, `trustdb.gpg` | Read-only | Public keyring + trust so gpg knows which key to sign with |
 | `~/.local/bin` | Read-only | User-installed binaries (mounted to separate path, added to PATH) |
 | `~/.config/clyde` | Read-only | User's global Nix packages (optional) |
 | `clyde-nix-store` (volume) | Read/Write | Nix package cache (persists across runs) |
@@ -392,6 +394,55 @@ If you don't need git operations via SSH:
 ```bash
 clyde --no-git
 ```
+
+## GPG Signing for Commits
+
+Clyde forwards your GPG agent socket to the container so the agent can sign
+commits. Like SSH, this forwards the agent's *restricted* extra socket rather
+than copying your keys — your **secret keys never enter the container**;
+signing operations are delegated to the `gpg-agent` running on your host.
+
+### Prerequisites
+
+Your `gpg-agent` must be running on the host with the signing key available:
+
+```bash
+# Make sure gpg-agent is running (harmless if already up)
+gpgconf --launch gpg-agent
+
+# Confirm your secret signing key is present on the host
+gpg --list-secret-keys --keyid-format long
+```
+
+Because signing is delegated to the host agent, the first signature in a
+session may trigger your host's pinentry prompt for the key passphrase (unless
+it is already cached). The prompt appears on the **host**, not in the container.
+
+### Enabling Signing in Git
+
+Configure git to sign commits (in your host `~/.gitconfig`, which is mounted
+read-only into the container):
+
+```bash
+git config --global user.signingkey <YOUR_KEY_ID>
+git config --global commit.gpgsign true
+```
+
+Or sign a single commit explicitly with `git commit -S`.
+
+### Verifying GPG Signing in Container
+
+```bash
+clyde --shell
+
+# Inside the container:
+echo "test" | gpg --clearsign     # should produce a signature via the host agent
+gpg --list-secret-keys            # your key(s) should be listed
+```
+
+If you see `GPG agent socket not found`, launch the agent on the host with
+`gpgconf --launch gpg-agent` and relaunch clyde. GPG forwarding is skipped when
+`--no-git` is used.
 
 ## Verification
 
@@ -526,6 +577,7 @@ docker volume rm clyde-nix-store clyde-claude-cache
 - **Container isolation**: Commands run by Claude Code cannot access files outside your mounted project directory
 - **Skip-permissions mode**: Enabled by default inside the container; the container boundary provides isolation
 - **SSH agent forwarding**: Private keys stay on your host; only the agent socket is forwarded (read-only)
+- **GPG agent forwarding**: Secret keys stay on your host; only the restricted agent socket is forwarded, and only the public keyring is mounted (read-only)
 - **Read-only mounts**: Your git config is mounted read-only
 - **Non-root**: Container runs as your user (not root) for proper file permissions
 - **Resource limits**: Default 8GB RAM / 4 CPU prevents runaway processes

@@ -64,7 +64,7 @@ Options:
     --memory <SIZE>        Container memory limit (default: 8g)
     --cpus <NUM>           Container CPU limit (default: 4)
     --build                Force rebuild of the Docker image
-    --no-git               Skip mounting ~/.gitconfig and SSH agent forwarding
+    --no-git               Skip mounting ~/.gitconfig and SSH/GPG agent forwarding
     --mount <DIR>          Mount DIR instead of the current dir (must contain \$PWD;
                            working directory stays at \$PWD). Useful to expose a
                            parent dir while launching from a subdirectory.
@@ -817,6 +817,33 @@ run_container() {
             # Fallback warning: agent not available, SSH won't work in container
             warn "SSH agent not running. Git SSH operations will not work in container."
             warn "Start ssh-agent and add keys with: eval \$(ssh-agent) && ssh-add"
+        fi
+
+        # Forward GPG agent socket so the agent can sign commits, keeping secret
+        # keys on the host (mirrors SSH agent forwarding above). We forward the
+        # restricted "extra" socket and mount the public keyring read-only;
+        # private-key operations are delegated to the host's gpg-agent.
+        if command -v gpgconf &>/dev/null; then
+            local gpg_extra_socket gnupg_home
+            gpg_extra_socket="$(gpgconf --list-dir agent-extra-socket 2>/dev/null)" || true
+            gnupg_home="${GNUPGHOME:-$HOME/.gnupg}"
+            if [[ -n "$gpg_extra_socket" ]] && [[ -S "$gpg_extra_socket" ]]; then
+                # In the container gpg uses GNUPGHOME=/home/claude/.gnupg and,
+                # absent /run/user/<uid>, expects its agent socket at
+                # $GNUPGHOME/S.gpg-agent.
+                docker_args+=(-e "GNUPGHOME=/home/claude/.gnupg")
+                docker_args+=(-v "$gpg_extra_socket:/home/claude/.gnupg/S.gpg-agent")
+                # Public keyring + trust so gpg knows which key to use.
+                if [[ -f "$gnupg_home/pubring.kbx" ]]; then
+                    docker_args+=(-v "$gnupg_home/pubring.kbx:/home/claude/.gnupg/pubring.kbx:ro")
+                fi
+                if [[ -f "$gnupg_home/trustdb.gpg" ]]; then
+                    docker_args+=(-v "$gnupg_home/trustdb.gpg:/home/claude/.gnupg/trustdb.gpg:ro")
+                fi
+            elif [[ -d "$gnupg_home" ]]; then
+                warn "GPG agent socket not found. GPG commit signing will not work in container."
+                warn "Ensure gpg-agent is running on the host: gpgconf --launch gpg-agent"
+            fi
         fi
     fi
 

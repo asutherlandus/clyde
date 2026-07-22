@@ -31,6 +31,7 @@
             just              # Command runner
             openssh           # SSH client
             tmux              # Terminal multiplexer
+            gnupg             # GPG for signing commits
           ];
 
           shellHook = ''
