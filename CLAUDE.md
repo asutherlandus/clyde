@@ -106,7 +106,7 @@ bats tests/
 4. **Auto-build**: Script builds image on first run if missing
 5. **Nix Package Management**: Project dependencies managed via Nix flakes for reproducibility
 6. **Claude Code via native installer**: Always-latest Claude Code installed via `claude.ai/install.sh` at runtime
-7. **Persistent Volumes**: `clyde-nix-store` for Nix cache, `clyde-claude-cache` for Claude Code
+7. **Persistent Volumes**: `clyde-nix-store` for Nix cache, `clyde-claude-cache` for Claude Code, `clyde-browser-cache` for Chrome/Playwright (browser mode only)
 
 ## Security Considerations
 
@@ -132,6 +132,7 @@ Profile names are validated to prevent path traversal attacks. Only alphanumeric
 - 003-nix-dependencies: Complete implementation of Nix-based dependency management
   - Hybrid approach: Nix for project dependencies, npm for always-latest Claude Code
   - Named Docker volumes for persistence (clyde-nix-store, clyde-npm-cache)
+    - clyde-npm-cache has since been removed, superseded by the native Claude Code installer
   - Project and user Nix configuration support (flake.nix, shell.nix)
   - New flags: --nix-verbose, --nix-gc, --list-packages
 
