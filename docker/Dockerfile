@@ -16,9 +16,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Set browser wrapper for OAuth URL printing
 ENV BROWSER=/usr/local/bin/open-url
 
-# Opt out of anonymous usage telemetry for bundled CLIs
-ENV OPENSPEC_TELEMETRY=0
-
 # Layer 1: Install minimal system packages
 # - curl, ca-certificates, xz-utils: Required for Nix installation
 # - tini: Init process for proper signal handling
