@@ -22,6 +22,9 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
+# Nothing here is published: these crates are the parts of one program, and a
+# version constraint between them would be bookkeeping with no reader.
+publish = false
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/nullpointer/clyde"
@@ -50,7 +53,6 @@ rand = "0.9"
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2"
 rustls-pki-types = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

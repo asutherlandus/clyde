@@ -438,6 +438,145 @@ rlimits are a genuinely weaker bound, not an equivalent one: `RLIMIT_NPROC` is p
 - The refusal is transitional. Phase 2b moots it: a microVM's memory and vCPU allocation bounds the workload by construction, with no cgroup delegation required.
 - `clyde doctor` must distinguish "no cgroup v2", "cgroup v2 present but not delegated", and "delegated but missing controllers", because the remedies differ.
 
+## Implementation refinements
+
+These arose while implementing Phases 0-4. Each is a narrowing or a clarification
+of a decision above rather than a reversal; where one changes what a decision
+said, it says so.
+
+### R1: The actor token binds a connection, and is re-resolved on every request
+
+**Refines** [D2](#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel).
+
+D2 says every actor-facing request carries the capability token. MCP has no
+per-request header, and threading a token through every tool call's arguments
+would put it in a place tool schemas and client logs can see.
+
+So the token is presented once, in `initialize`, and binds the connection. The
+property D2 exists for is preserved by re-resolving token → session → lease →
+mission on **every** request rather than caching the resolution: an expired or
+revoked lease stops working immediately rather than at the next connection. The
+socket is bind-mounted only into the sandbox the token belongs to, so the
+connection and the token identify the same actor either way.
+
+What this gives up: a stolen connection is as good as a stolen token for as long
+as it stays open. Since the connection is a Unix socket inside one sandbox, an
+attacker who can hold it already has that sandbox.
+
+### R2: `clyde-git` is a crate
+
+**Extends** the [Phase 0 crate layout](phase-0-foundations.md#3-crate-layout).
+
+Phase 4 requires exactly one place in the codebase that constructs a git command.
+Both clyded (diff, commit preparation) and clyde-brokerd (push) need it, and they
+are separate processes, so it is a crate rather than a module: `crates/clyde-git`.
+
+Its sanitisation is applied by construction — there is no constructor that
+produces an unsanitised invocation — and the one value a caller may influence is
+the ssh command, which is how the broker supplies a credential.
+
+### R3: Learn-mode observation uses the `inotify` crate
+
+**Implements** the observation mechanism in
+[D18](#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift).
+
+Host-side `inotify` on the materialised tree needs syscalls. The `inotify` crate
+is a thin safe wrapper, which keeps the workspace free of `unsafe` (forbidden at
+the workspace level) without a `pre_exec` hook or hand-rolled fd handling.
+
+The observation reports how many directories it could not watch, so an incomplete
+observation — a tree past the host's watch limit — cannot be mistaken for a
+complete one.
+
+### R4: Resource limits are applied by wrapping the command
+
+**Implements** the limits in
+[D5](#d5-bubblewrap-first-behind-a-sandboxbackend-trait) and
+[D22](#d22-no-degraded-resource-limits-for-untrusted-execution).
+
+Limits are applied by wrapping the sandbox command in `systemd-run --user
+--scope` and `prlimit` rather than by setting rlimits in a `pre_exec` hook. That
+keeps the whole mechanism at the argv level: it contains no `unsafe`, and the
+exact command Clyde runs is a value a test can assert on and an audit record can
+carry.
+
+`RLIMIT_NPROC` is deliberately not set. It is per-user, so it would bound the
+developer's whole login session rather than the sandbox, and would not bound the
+sandbox at all if other processes were already running. Process count is bounded
+by `TasksMax` in the cgroup, which is per-scope.
+
+### R5: The seccomp filter is a deny list, and is passed on the child's stdin
+
+**Implements** the seccomp filter in
+[Phase 2a](phase-2-execution-and-isolation.md#2-bubblewrap-backend).
+
+`bwrap --seccomp FD` reads a filter from an inherited descriptor. Passing it as
+the child's stdin keeps this in safe Rust: `Stdio::from(File)` places the file on
+descriptor 0 with no fd manipulation. A sandboxed task has no use for stdin.
+
+The policy is a deny list over an allow-by-default base. An allow-list is the
+stronger shape, but a build sandbox runs cargo, rustc, a linker, and arbitrary
+`build.rs` code, whose syscall surface is wide and toolchain-dependent. An
+allow-list tight enough to be worth having would break builds on the next
+toolchain bump, and a filter that gets disabled to make builds work is worth
+nothing. The deny list closes the escape and privilege-manipulation calls that
+namespace isolation cares about; the namespace and cgroup boundaries remain the
+primary control.
+
+### R6: A test-only backend exists, and never ships
+
+**Extends** [D5](#d5-bubblewrap-first-behind-a-sandboxbackend-trait).
+
+Integration tests need to exercise the pipeline — admission, snapshot, execution,
+classification, artifacts, audit — on hosts that cannot create unprivileged user
+namespaces, which includes containers and a default Ubuntu 24.04 install.
+
+A backend with no isolation at all lives behind the `test-backend` cargo feature,
+which no shipped binary enables, and reports `BackendKind::TestOnly` so a run on
+it is identifiable in the audit record. The daemon's own registry construction
+never adds it; a test must inject it explicitly.
+
+Everything asserted with it is a statement about the pipeline. The isolation
+boundary is asserted separately and structurally, over every sandbox
+specification the system can generate, which is a check that runs on every host.
+
+### R7: A remote is approved by name; the broker resolves the URL
+
+**Refines** [D8](#d8-brokered-gitpush-uses-the-developers-existing-credential-inside-the-broker-only).
+
+The push request digest covers the remote *name*, refspec, commit, and tree, but
+not the resolved URL. A human approves a remote name, and the URL comes from the
+broker's own configuration — never from the workspace repository, whose
+configuration is attacker-controlled content in this threat model.
+
+So a configuration change to a remote's URL is not an approval mismatch, while a
+different remote is. That is the intended reading of "approved for one remote".
+
+### R8: Replay protection is the brokered operation's state
+
+**Refines** [Phase 4 deliverable 2](phase-4-credential-broker.md#2-clyde-brokerd).
+
+Phase 4 says the broker refuses an operation whose approval is already consumed.
+Consumption and execution cannot be transactional across two processes, and the
+correct ordering is consume-then-push: a push that ran under a consumed approval
+is recoverable, while one that ran under an unconsumed approval is a second push
+waiting to happen. That ordering means the broker would always see the approval
+as consumed.
+
+So the broker verifies a fact it can check for itself: clyded moves the brokered
+operation to `executing` immediately before calling, a terminal operation cannot
+re-enter that state, and the broker refuses anything not in it. Single-use
+consumption remains the control plane's bookkeeping; the operation state is the
+replay protection the broker enforces independently.
+
+### R9: `clyde doctor` works without a daemon
+
+**Extends** [Phase 0 deliverable 11](phase-0-foundations.md#11-clyde-doctor).
+
+Bring-up is exactly when the daemon is not running, so `clyde doctor` falls back
+to probing the host directly when it cannot reach the admin socket. A diagnostic
+that requires the thing it is diagnosing is no diagnostic at all.
+
 ## Cross-cutting consequences
 
 ### Snapshot scope is baselined, not merely closure-derived

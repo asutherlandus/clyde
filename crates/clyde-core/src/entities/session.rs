@@ -156,7 +156,10 @@ impl TokenHash {
 /// `Debug` so that a log line cannot be mistaken for one containing a secret.
 impl std::fmt::Debug for TokenHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokenHash({}…)", &self.to_hex().get(..8).unwrap_or("")) // PANIC-JUSTIFIED: get returns Option
+        // A prefix only: enough to correlate two log lines, not enough to be
+        // useful to anyone who obtains it.
+        let hex = self.to_hex();
+        write!(f, "TokenHash({}…)", hex.get(..8).unwrap_or(""))
     }
 }
 

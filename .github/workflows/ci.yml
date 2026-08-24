@@ -1,0 +1,107 @@
+# CI runs every job inside `nix develop`, so a green run means the flake is
+# correct. Nothing here uses a setup action: if CI and local development could
+# diverge, the flake would stop being the source of truth (AGENTS.md).
+name: ci
+
+on:
+  push:
+    branches: [main, clyde-next]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+jobs:
+  flake:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # This is where the runtime-root assertion runs: it inspects the closure of
+      # runtimeRoots.workspace and fails if a project build toolchain is
+      # reachable from it (D6, D17).
+      - run: nix flake check --print-build-logs
+
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop --command cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop --command cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # The integration tests run a real cargo check through the pipeline, so
+      # they need a writable HOME and the toolchain the devShell provides.
+      - run: nix develop --command cargo nextest run --all-features --no-fail-fast
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop --command cargo deny check advisories licenses bans sources
+
+  no-panic:
+    name: no-panic lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # Production code must not panic (AGENTS.md). clippy covers what it can
+      # see; this covers the rest, including macro forms clippy does not flag.
+      - run: nix develop --command ./ci/no-panic-lint.sh
+
+  # A host without unprivileged user namespaces cannot exercise the sandbox
+  # backends. The specifications are asserted structurally instead, which runs
+  # everywhere; this job records what was and was not covered so a green CI run
+  # is not mistaken for a boundary test.
+  coverage-note:
+    name: what CI does not cover
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: state the gap
+        run: |
+          echo "CI asserts sandbox properties over specifications, not over running sandboxes."
+          echo "Executing them needs unprivileged user namespaces (bubblewrap) or KVM (Firecracker),"
+          echo "neither of which a hosted runner reliably provides. See docs/phase-2-execution-and-isolation.md."

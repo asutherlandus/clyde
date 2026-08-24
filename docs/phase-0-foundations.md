@@ -45,6 +45,7 @@ crates/
   clyde-snapshot/    content store, snapshot manifest, materialisation strategies
   clyde-sandbox/     SandboxBackend trait, cgroup/rlimit helpers  (backends: Phase 2)
   clyde-egress/      egress profiles, proxy, forwarder wire protocol  (Phase 1)
+  clyde-git/         the single place that constructs a git command (R2)
   clyde-api/         wire types, actor-facing view types, MCP tool + JSON-RPC defs
   clyde-broker-api/  broker request/response types, shared by clyded and brokerd
 bin/
@@ -53,7 +54,8 @@ bin/
   clyde-brokerd/     broker daemon (stub in Phase 0)
   clyde-forward/     in-sandbox egress forwarder (part of runtime roots)
 nix/                 runtime root derivations
-tests/               cross-crate integration tests
+tests/fixtures/      fixture projects, each stating the property it asserts
+bin/clyded/tests/    cross-crate integration tests, which need the daemon
 ```
 
 Dependency direction is strictly one way: `core` ← `policy` ← everything else. `clyde-policy` must not depend on `clyde-store`, `clyde-sandbox`, or `tokio`, so policy decisions are pure and testable without I/O ([AGENTS.md](../AGENTS.md#api-and-module-design)).

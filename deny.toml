@@ -1,0 +1,55 @@
+# cargo-deny configuration.
+#
+# Three questions, kept separate on purpose: is a dependency known-vulnerable,
+# is its licence one we can ship, and is it a dependency we intended to have.
+
+[advisories]
+yanked = "deny"
+# An unmaintained *direct* dependency is ours to replace and fails the build. An
+# unmaintained transitive one is not something this repository can act on today,
+# and failing on it would mean the security gate that matters — the vulnerability
+# check — gets disabled to make CI green.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# Permissive licences only. Clyde is MIT, and a copyleft dependency would change
+# what downstream users can do with it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+# ring's licence is a combination that the SPDX expression does not capture; it
+# is permissive and is used here only through rustls.
+name = "ring"
+allow = ["OpenSSL", "ISC", "MIT"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Intra-workspace path dependencies have no version requirement, which reads as
+# a wildcard. They are not a supply-chain surface: they are this repository.
+allow-wildcard-paths = true
+# Nothing in this workspace should pull in an alternative TLS or async stack:
+# one of each is a smaller trusted surface than two.
+deny = [
+    { name = "openssl-sys", reason = "Clyde uses rustls; a second TLS stack widens the trusted surface" },
+    { name = "native-tls", reason = "Clyde uses rustls" },
+    { name = "async-std", reason = "Clyde uses tokio" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

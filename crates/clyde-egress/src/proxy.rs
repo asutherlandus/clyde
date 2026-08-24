@@ -713,10 +713,10 @@ async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String> {
         if read == 0 {
             break;
         }
-        if byte == [b'\n'] {
+        if byte == *b"\n" {
             break;
         }
-        if byte != [b'\r'] {
+        if byte != *b"\r" {
             line.push(byte[0]);
         }
         if line.len() > 8192 {

@@ -29,7 +29,7 @@ let
     pkgs.yq-go
     pkgs.tree
     pkgs.less
-    pkgs.comby            # structural rewrite tool
+    pkgs.ast-grep         # structural rewrite tool
     pkgs.python3Minimal   # one-off codemods
     pkgs.gnutar
     pkgs.gzip
