@@ -17,9 +17,21 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::error::{DaemonError, Result};
 
+/// The kernel's limit on a Unix socket path, minus room for the terminator.
+///
+/// Checked explicitly because the error the kernel returns — "path must be
+/// shorter than SUN_LEN" — does not say which path or what to do about it, and
+/// this is a real failure mode for a state directory under a long temporary
+/// path.
+const MAX_SOCKET_PATH: usize = 107;
+
 /// Why a socket path was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SocketRefusal {
+    #[error(
+        "{path:?} is {length} bytes; a unix socket path must be at most {MAX_SOCKET_PATH}. Set --state-dir (or CLYDE_STATE_DIR) to a shorter path."
+    )]
+    PathTooLong { path: PathBuf, length: usize },
     #[error("{path:?} is world-writable, so another user could replace the socket")]
     WorldWritable { path: PathBuf },
     #[error("{path:?} is already bound by a live process")]
@@ -44,6 +56,13 @@ pub fn check_socket_path(
 ) -> std::result::Result<(), SocketRefusal> {
     use std::os::unix::fs::PermissionsExt as _;
 
+    let length = path.as_os_str().len();
+    if length > MAX_SOCKET_PATH {
+        return Err(SocketRefusal::PathTooLong {
+            path: path.to_path_buf(),
+            length,
+        });
+    }
     let Some(parent) = path.parent() else {
         return Err(SocketRefusal::NoParent {
             path: path.to_path_buf(),
@@ -190,6 +209,16 @@ mod tests {
         let refusal =
             check_socket_path(&socket, &[], true).expect_err("a live daemon must not be displaced");
         assert!(matches!(refusal, SocketRefusal::AlreadyBound { .. }));
+    }
+
+    #[test]
+    fn an_over_long_path_is_refused_with_the_remedy() {
+        // The kernel's own error names neither the path nor the fix, and a state
+        // directory under a long temporary path hits this immediately.
+        let long = PathBuf::from(format!("/tmp/{}/run/clyded-admin.sock", "x".repeat(120)));
+        let refusal = check_socket_path(&long, &[], false).expect_err("too long");
+        assert!(matches!(refusal, SocketRefusal::PathTooLong { .. }));
+        assert!(refusal.to_string().contains("--state-dir"));
     }
 
     #[test]

@@ -319,7 +319,20 @@ async fn close_mission(daemon: &Arc<Daemon>, request: &Request) -> Result<serde_
         .iter()
         .map(ToString::to_string)
         .collect();
-    let diff = clyde_git::diff::workspace_diff(&daemon.git, &workspace.root, &paths).await?;
+    // A workspace need not be a git repository, and a repository need not have a
+    // commit yet. Neither is a reason to refuse to close a mission: the closeout
+    // says there was no diff and why, rather than leaving the mission open.
+    let (diff, diff_note) =
+        match clyde_git::diff::workspace_diff(&daemon.git, &workspace.root, &paths).await {
+            Ok(diff) => {
+                let note = diff.stat.render();
+                (diff, note)
+            }
+            Err(error) => (
+                clyde_git::WorkspaceDiff::default(),
+                format!("no closing diff: {error}"),
+            ),
+        };
     let artifact = if diff.is_empty() {
         None
     } else {
@@ -338,14 +351,14 @@ async fn close_mission(daemon: &Arc<Daemon>, request: &Request) -> Result<serde_
     };
 
     let leases = daemon.store.list_leases(&id)?;
-    let closed = missions::close(daemon, &id, diff.stat.render(), artifact)?;
+    let closed = missions::close(daemon, &id, diff_note.clone(), artifact)?;
     for lease in leases {
         agent::stop_environment(daemon, &lease.id).await;
     }
     Ok(serde_json::json!({
         "mission": closed.id.to_string(),
         "state": closed.state.to_string(),
-        "diff": diff.stat.render(),
+        "diff": diff_note,
     }))
 }
 
