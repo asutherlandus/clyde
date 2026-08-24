@@ -460,7 +460,7 @@ fn request_escalation(
             request_digest: digest,
             reason: args.reason,
             alternatives: args.alternatives,
-            prior_failure: last_failure(daemon, session, task),
+            prior_failure: last_failure(daemon, session),
             egress_hosts: hosts.iter().map(ToString::to_string).collect(),
             egress_profile: policy.egress.to_string(),
             credentials: policy.credentials.to_string(),
@@ -492,17 +492,29 @@ fn request_escalation(
     }))
 }
 
-/// The most recent failure for this task, so the prompt can say what went wrong.
-fn last_failure(daemon: &Arc<Daemon>, session: &ResolvedSession, task: TaskType) -> Option<String> {
+/// The most recent failure in this mission, so the prompt can say what went
+/// wrong.
+///
+/// Deliberately not filtered to the escalated task: an escalation is usually
+/// asked for *because* a different task failed — a fetch is requested because a
+/// check could not proceed offline — and the failure the human needs to see is
+/// the one that motivated the request.
+fn last_failure(daemon: &Arc<Daemon>, session: &ResolvedSession) -> Option<String> {
     daemon
         .store
         .list_task_runs(&session.mission.id)
         .ok()?
         .into_iter()
-        .filter(|run| run.request.task == task)
-        .filter_map(|run| run.outcome)
-        .rfind(|outcome| !outcome.classification.is_success())
-        .map(|outcome| format!("{}: {}", outcome.classification.name(), outcome.summary))
+        .filter_map(|run| run.outcome.map(|outcome| (run.request.task, outcome)))
+        .rfind(|(_, outcome)| !outcome.classification.is_success())
+        .map(|(task, outcome)| {
+            format!(
+                "{} failed with {}: {}",
+                task.name(),
+                outcome.classification.name(),
+                outcome.summary
+            )
+        })
 }
 
 async fn commit_prepare(
