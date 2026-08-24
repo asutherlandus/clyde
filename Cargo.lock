@@ -379,8 +379,10 @@ dependencies = [
 name = "clyde-git"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clyde-core",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
