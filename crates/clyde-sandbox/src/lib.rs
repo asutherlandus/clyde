@@ -30,7 +30,10 @@ pub mod test_backend;
 
 pub use backend::{ExitStatus, SandboxBackend, SandboxHandle};
 pub use bubblewrap::BubblewrapBackend;
-pub use capability::{Capability, HostReport, ProbePaths, probe};
+pub use capability::{
+    Capability, CgroupObservation, CpuVirtualisation, Enclosure, HostReport, KvmObservation,
+    ProbePaths, probe,
+};
 pub use error::{Result, SandboxError};
 pub use firecracker::{FirecrackerBackend, FirecrackerConfig};
 pub use limits::LimitTools;

@@ -577,6 +577,32 @@ Bring-up is exactly when the daemon is not running, so `clyde doctor` falls back
 to probing the host directly when it cannot reach the admin socket. A diagnostic
 that requires the thing it is diagnosing is no diagnostic at all.
 
+### R10: a remedy that cannot work is a defect, not a nicety
+
+**Extends** [R9](#r9-clyde-doctor-works-without-a-daemon).
+
+`clyde doctor` reported two prerequisites correctly and diagnosed both causes
+wrongly when run inside a container: an unwritable `cgroup.subtree_control` was
+attributed to a missing `Delegate=yes` when the real cause was a read-only
+`/sys/fs/cgroup` and no service manager at all, and an absent `/dev/kvm` was
+attributed to hardware that in fact reported `vmx`. Both remedies were
+actionable-looking and impossible, which is worse than silence — they get
+followed.
+
+So the probes now observe the enclosure (container, no service manager, or host)
+and the CPU's virtualisation extensions, and select the remedy from them. Two
+constraints on this:
+
+- **The enclosure changes the remedy, never the verdict.** `can_run_build` and
+  `strongest_isolation` read capability variants only, so nothing about
+  detecting a container can widen what a host is permitted to run — D22's
+  refusal in particular. A test asserts the two remedies differ while the
+  detail and the admission decision stay identical.
+- **Observation is separated from classification.** The cases worth diagnosing
+  are the ones the test machine cannot reproduce, so `CgroupObservation` and
+  `KvmObservation` are plain values and the classifiers are pure functions over
+  them.
+
 ## Cross-cutting consequences
 
 ### Snapshot scope is baselined, not merely closure-derived

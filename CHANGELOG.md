@@ -25,6 +25,12 @@ The MVP slice, Phases 0 through 4, implemented against the design document set i
   undetectable.
 - `clyde doctor`, which distinguishes "user namespaces unavailable" from "blocked
   by AppArmor" and works without a running daemon.
+- `clyde doctor` names remedies that can actually work where it is running: a
+  read-only cgroupfs is reported as the container boundary it is rather than as a
+  session misconfiguration, and a missing `/dev/kvm` on a CPU reporting `vmx` or
+  `svm` is reported as a device that was not exposed rather than as absent
+  hardware. Enclosure detection feeds the remedy text only; a test asserts it
+  cannot change what the host is permitted to run.
 - Fifteen test fixtures, each stating the property it asserts in its own README.
 
 ### Phase 1 — mission, lease, and approval
