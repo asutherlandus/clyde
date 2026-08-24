@@ -38,6 +38,7 @@ clyde-api = { path = "crates/clyde-api" }
 clyde-broker-api = { path = "crates/clyde-broker-api" }
 
 blake3 = "1"
+inotify = { version = "0.11", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
