@@ -38,6 +38,9 @@ The MVP slice, Phases 0 through 4, implemented against the design document set i
   environment. Unknown, expired, and revoked tokens are rejected identically.
 - The egress proxy, the Clyde CA, and the in-sandbox forwarder. Profile `none` is
   the absence of a socket rather than a flag.
+- `--json` for every command, driven through the real binaries by an integration
+  test, because the CLI is also the integration-test harness (D13) and a renamed
+  field is a broken caller.
 
 ### Phase 2 — snapshots and isolation
 
