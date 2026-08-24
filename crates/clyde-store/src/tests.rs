@@ -952,6 +952,7 @@ fn bundle_inventory_confirmation_requires_a_human() {
             .record_bundle(crate::BundleRecord {
                 artifact: artifact.clone(),
                 lockfile_digest: Digest::of_bytes(b"lock"),
+                lockfile: Default::default(),
                 content_ref: PathBuf::from("/var/lib/clyde/deps/x"),
                 crate_count: 12,
                 inventory: CodeExecInventory::default(),

@@ -84,14 +84,18 @@ impl Harness {
         // through a test-only injection point, so the test exercises what a host
         // configuration would do.
         let host_config = dir.path().join("host.toml");
+        let mut host = String::new();
         if toolchain {
             let root = toolchain_runtime_root(dir.path());
-            std::fs::write(
-                &host_config,
-                format!("[sandbox]\nruntime_root_rust = \"{}\"\n", root.display()),
-            )
-            .unwrap();
+            host.push_str(&format!(
+                "[sandbox]\nruntime_root_rust = \"{}\"\n\n",
+                root.display()
+            ));
         }
+        // Push configuration is host configuration: a repository cannot widen
+        // it, and without it every push is refused before a human is asked.
+        host.push_str("[push]\nremotes = [\"origin\"]\nbranch_patterns = [\"feature/*\"]\n");
+        std::fs::write(&host_config, host).unwrap();
         let options = DaemonOptions {
             state_root: dir.path().join("state"),
             config_paths: clyded::config_load::ConfigPaths {

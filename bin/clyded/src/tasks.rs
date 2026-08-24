@@ -86,10 +86,31 @@ pub async fn run_task(
     let digest = request
         .digest()
         .map_err(|error| DaemonError::internal(error.to_string()))?;
-    let approval = match approvals::find_authorising(daemon, &context.mission.id, &digest)? {
-        Some(_) => ApprovalState::Present,
-        None => ApprovalState::None,
+    let (approval, fetch) = match approvals::find_authorising(daemon, &context.mission.id, &digest)?
+    {
+        Some(_) => (ApprovalState::Present, None),
+        // A fetch is the one task configuration may pre-approve, and only for
+        // the low-risk classes (Phase 3 deliverable 3b).
+        None if task == TaskType::RustResolveDeps => fetch_pre_approval(daemon, context)?,
+        None => (ApprovalState::None, None),
     };
+    if matches!(approval, ApprovalState::Present) && fetch.is_some() {
+        audit::record(
+            daemon.store.as_ref(),
+            audit::draft(
+                AuditEventKind::ApprovalDecided,
+                serde_json::json!({
+                    "decision": "pre_approved_by_configuration",
+                    "task": task.name(),
+                    "change": fetch
+                        .as_ref()
+                        .map(|fetch| fetch.change.render_summary()),
+                }),
+            )
+            .mission(context.mission.id.clone())
+            .task_run(request.id.clone()),
+        );
+    }
 
     let baseline_key = BaselineKey {
         workspace: context.workspace.id.clone(),
@@ -144,7 +165,14 @@ pub async fn run_task(
     }
 
     if admission.outcome == PolicyOutcome::AllowedWithApproval {
-        let request_view = create_approval(daemon, context, &request, &digest, &admission)?;
+        let request_view = create_approval(
+            daemon,
+            context,
+            &request,
+            &digest,
+            &admission,
+            fetch.as_ref(),
+        )?;
         return Err(DaemonError::ApprovalRequired(request_view));
     }
 
@@ -219,6 +247,96 @@ pub async fn run_task(
     finish(daemon, context, &request, outcome).await
 }
 
+/// How a fetch would change the dependency set.
+///
+/// "Fetch dependencies" and "fetch dependencies, including four new crates from
+/// a source you have not used before" deserve different scrutiny, and only Clyde
+/// is in a position to tell them apart.
+#[derive(Debug)]
+pub struct FetchChange {
+    pub change: clyde_policy::access::LockfileChange,
+    /// The previously satisfied bundle, if there is one.
+    pub previous: Option<clyde_store::BundleRecord>,
+}
+
+/// Classifies the lockfile change a fetch would satisfy.
+fn fetch_change(daemon: &Arc<Daemon>, context: &TaskContext) -> Result<Option<FetchChange>> {
+    let lockfile = context.workspace.root.join("Cargo.lock");
+    if !lockfile.exists() {
+        return Ok(None);
+    }
+    let requested = clyde_snapshot::cargo::lockfile::read(&lockfile)?;
+    // The most recently imported bundle is the one a build would be running
+    // against, so it is what "previously satisfied" means here.
+    let previous = daemon
+        .store
+        .list_bundles()?
+        .into_iter()
+        .max_by_key(|record| record.created_at);
+    let baseline = previous
+        .as_ref()
+        .map(|record| record.lockfile.clone())
+        .unwrap_or_default();
+    Ok(Some(FetchChange {
+        change: clyde_policy::access::classify_lockfile_change(&baseline, &requested.summary),
+        previous,
+    }))
+}
+
+/// Whether configuration pre-approves this fetch.
+///
+/// Git dependencies, unknown registries, and same-version source changes are
+/// never pre-approvable, whatever configuration says.
+fn fetch_pre_approval(
+    daemon: &Arc<Daemon>,
+    context: &TaskContext,
+) -> Result<(ApprovalState, Option<FetchChange>)> {
+    let Some(fetch) = fetch_change(daemon, context)? else {
+        return Ok((ApprovalState::None, None));
+    };
+    let pre_approved = fetch.change.is_pre_approvable(
+        context.config.fetch.pre_approve_additions,
+        context.config.fetch.pre_approve_version_changes,
+    );
+    let state = if pre_approved {
+        ApprovalState::Present
+    } else {
+        ApprovalState::None
+    };
+    Ok((state, Some(fetch)))
+}
+
+/// The code-execution inventory diff a fetch would produce.
+///
+/// Reported alongside the lockfile diff because it is the higher-signal half:
+/// a human should not have to work out which of four new crates runs a build
+/// script from their names.
+fn inventory_diff_for(
+    daemon: &Arc<Daemon>,
+    context: &TaskContext,
+    fetch: &FetchChange,
+) -> Vec<String> {
+    let Some(previous) = fetch.previous.as_ref() else {
+        return vec![
+            "no bundle has been imported yet, so every build-time code execution in this fetch is new"
+                .to_owned(),
+        ];
+    };
+    // The inventory of what a fetch *would* bring cannot be computed before the
+    // fetch runs, so what is shown is the change against the pinned baseline
+    // that a build would next be checked against. The pre-execution inventory
+    // check runs again on the new bundle before anything executes.
+    let baselines = daemon
+        .store
+        .list_baselines(&context.workspace.id)
+        .unwrap_or_default();
+    let Some(baseline) = baselines.first() else {
+        return Vec::new();
+    };
+    let drift = clyde_policy::access::inventory_drift(&baseline.inventory, &previous.inventory);
+    clyde_policy::access::render_inventory_diff(&drift)
+}
+
 /// Records the decision, whether it allows or denies.
 fn record_decision(
     daemon: &Arc<Daemon>,
@@ -251,6 +369,7 @@ fn create_approval(
     request: &TaskRequest,
     digest: &clyde_core::Digest,
     admission: &clyde_policy::Admission,
+    fetch: Option<&FetchChange>,
 ) -> Result<String> {
     let policy = admission
         .policy
@@ -287,8 +406,13 @@ fn create_approval(
                 .iter()
                 .map(|output| format!("{output:?}"))
                 .collect(),
-            lockfile_change: None,
-            inventory_diff: Vec::new(),
+            lockfile_change: fetch.map(|fetch| fetch.change.render_summary()),
+            // The higher-signal companion to the lockfile diff: a lockfile
+            // addition of a crate that never executes code is a materially
+            // different risk from one that runs a build script.
+            inventory_diff: fetch
+                .map(|fetch| inventory_diff_for(daemon, context, fetch))
+                .unwrap_or_default(),
             task_evidence: Vec::new(),
             caveats: if policy.egress.is_none() {
                 Vec::new()

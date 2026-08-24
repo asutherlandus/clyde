@@ -458,6 +458,7 @@ dependencies = [
  "clap",
  "clyde-api",
  "clyde-broker-api",
+ "clyde-brokerd",
  "clyde-core",
  "clyde-egress",
  "clyde-git",

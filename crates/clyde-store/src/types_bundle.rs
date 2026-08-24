@@ -16,6 +16,12 @@ pub struct BundleRecord {
     pub artifact: ArtifactId,
     /// The `Cargo.lock` digest this bundle satisfies.
     pub lockfile_digest: Digest,
+    /// The lockfile itself, reduced to what the fetch policy needs.
+    ///
+    /// Kept so the next fetch can be classified against the previously satisfied
+    /// lockfile. Without it, "four new crates from a source you have not used
+    /// before" is not a distinction Clyde could make.
+    pub lockfile: clyde_policy::access::LockfileSummary,
     /// Content-addressed root of the bundle in the read-only bundle store.
     pub content_ref: std::path::PathBuf,
     pub crate_count: u32,

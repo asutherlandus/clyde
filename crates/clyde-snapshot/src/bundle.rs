@@ -114,8 +114,9 @@ impl BundleStore {
         Ok(BundleRecord {
             artifact: id,
             lockfile_digest: parsed.digest,
-            content_ref: target,
             crate_count: u32::try_from(parsed.summary.packages.len()).unwrap_or(u32::MAX),
+            lockfile: parsed.summary,
+            content_ref: target,
             inventory,
             created_at: Utc::now(),
             registries,

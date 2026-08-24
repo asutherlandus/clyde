@@ -200,3 +200,68 @@ fn an_absent_crate_fails_as_missing_dependencies_not_as_a_project_error() {
     );
     assert!(!classification.class.is_users_code());
 }
+
+#[test]
+fn configuration_can_pre_approve_a_low_risk_fetch_but_never_a_risky_one() {
+    use clyde_policy::access::{
+        LockedPackage, LockfileSummary, PackageSource, classify_lockfile_change,
+    };
+
+    let registry = |name: &str, version: &str| LockedPackage {
+        name: name.to_owned(),
+        version: version.to_owned(),
+        source: PackageSource::Registry {
+            index: "sparse+https://index.crates.io/".to_owned(),
+        },
+    };
+    let previous = LockfileSummary {
+        packages: vec![registry("serde", "1.0.0")],
+    };
+
+    // An addition from a registry already in use is the low-risk class.
+    let addition = classify_lockfile_change(
+        &previous,
+        &LockfileSummary {
+            packages: vec![registry("serde", "1.0.0"), registry("new", "0.1.0")],
+        },
+    );
+    assert!(addition.is_pre_approvable(true, false));
+    assert!(
+        !addition.is_pre_approvable(false, false),
+        "pre-approval is opt-in"
+    );
+
+    // A git dependency is never pre-approvable, whatever configuration says.
+    let git = classify_lockfile_change(
+        &previous,
+        &LockfileSummary {
+            packages: vec![
+                registry("serde", "1.0.0"),
+                LockedPackage {
+                    name: "sketchy".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    source: PackageSource::Git {
+                        url: "https://example.test/x".to_owned(),
+                        rev: None,
+                    },
+                },
+            ],
+        },
+    );
+    assert!(!git.is_pre_approvable(true, true));
+
+    // Nor is a same-version source change.
+    let tampered = classify_lockfile_change(
+        &previous,
+        &LockfileSummary {
+            packages: vec![LockedPackage {
+                name: "serde".to_owned(),
+                version: "1.0.0".to_owned(),
+                source: PackageSource::Registry {
+                    index: "sparse+https://mirror.test/".to_owned(),
+                },
+            }],
+        },
+    );
+    assert!(!tampered.is_pre_approvable(true, true));
+}

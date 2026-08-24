@@ -78,6 +78,19 @@ pub struct EgressConfig {
     pub model_api_auth_header: Option<String>,
 }
 
+/// Which classes of lockfile change may be pre-approved for a mission.
+///
+/// Configuration may pre-approve the low-risk classes; a repository may narrow
+/// that but never widen it (D14). Git dependencies, unknown registries, and
+/// same-version source changes are never pre-approvable whatever this says —
+/// that is enforced in `LockfileChange::is_pre_approvable` rather than here, so
+/// a configuration key cannot reach them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FetchConfig {
+    pub pre_approve_additions: bool,
+    pub pre_approve_version_changes: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotConfig {
     /// Additional exclusions. Repository config may add and never remove, since
@@ -152,6 +165,7 @@ pub struct Config {
     pub registries: RegistryConfig,
     pub egress: EgressConfig,
     pub snapshot: SnapshotConfig,
+    pub fetch: FetchConfig,
     pub mission_defaults: MissionDefaults,
     pub push: PushConfig,
     pub limits: LimitsConfig,
@@ -182,6 +196,9 @@ impl Config {
             snapshot: SnapshotConfig {
                 exclusions: BTreeSet::new(),
             },
+            // Nothing is pre-approved by default: the first fetch reaches a
+            // human, and a host that wants otherwise says so explicitly.
+            fetch: FetchConfig::default(),
             mission_defaults: MissionDefaults {
                 budget: Budget {
                     max_duration: HumanDuration::parse("2h").unwrap_or(HumanDuration::MINIMUM),
@@ -248,6 +265,7 @@ pub struct ConfigFile {
     pub registries: Option<RegistriesSection>,
     pub egress: Option<EgressSection>,
     pub snapshot: Option<SnapshotSection>,
+    pub fetch: Option<FetchSection>,
     pub mission: Option<MissionSection>,
     pub push: Option<PushSection>,
     pub limits: Option<LimitsSection>,
@@ -281,6 +299,13 @@ pub struct EgressSection {
 #[serde(deny_unknown_fields)]
 pub struct SnapshotSection {
     pub exclusions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchSection {
+    pub pre_approve_additions: Option<bool>,
+    pub pre_approve_version_changes: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -605,6 +630,36 @@ fn merge(
         && let Some(exclusions) = snapshot.exclusions
     {
         base.snapshot.exclusions.extend(exclusions);
+    }
+
+    // fetch.*: a repository may withdraw a pre-approval but never grant one.
+    if let Some(fetch) = file.fetch {
+        for (requested, current, key) in [
+            (
+                fetch.pre_approve_additions,
+                &mut base.fetch.pre_approve_additions,
+                "fetch.pre_approve_additions",
+            ),
+            (
+                fetch.pre_approve_version_changes,
+                &mut base.fetch.pre_approve_version_changes,
+                "fetch.pre_approve_version_changes",
+            ),
+        ] {
+            let Some(requested) = requested else { continue };
+            if source.may_widen() || !requested {
+                *current = requested;
+            } else {
+                rejections.push(ConfigRejection {
+                    key: key.to_owned(),
+                    source,
+                    kind: RejectionKind::WidensAuthority {
+                        current: "false".to_owned(),
+                        requested: "true".to_owned(),
+                    },
+                });
+            }
+        }
     }
 
     if let Some(mission) = file.mission
@@ -1262,6 +1317,36 @@ mod tests {
         )
         .expect_err("re-enabling must be rejected");
         assert_eq!(error.rejections()[0].key, "tasks.git.push.enabled");
+    }
+
+    #[test]
+    fn a_repository_may_withdraw_a_fetch_pre_approval_but_not_grant_one() {
+        let base = host_layer(
+            Config::defaults(),
+            "[fetch]\npre_approve_additions = true\n",
+        );
+        assert!(base.fetch.pre_approve_additions);
+
+        let (narrowed, _) = repo_result(base.clone(), "[fetch]\npre_approve_additions = false\n")
+            .expect("withdrawing a pre-approval narrows");
+        assert!(!narrowed.fetch.pre_approve_additions);
+
+        let error = repo_result(
+            Config::defaults(),
+            "[fetch]\npre_approve_version_changes = true\n",
+        )
+        .expect_err("a repository must not pre-approve its own dependency changes");
+        assert_eq!(
+            error.rejections()[0].key,
+            "fetch.pre_approve_version_changes"
+        );
+    }
+
+    #[test]
+    fn nothing_is_pre_approved_by_default() {
+        let config = Config::defaults();
+        assert!(!config.fetch.pre_approve_additions);
+        assert!(!config.fetch.pre_approve_version_changes);
     }
 
     #[test]

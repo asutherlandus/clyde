@@ -52,7 +52,7 @@ refused on this host — which is the intended behaviour, not a gap.
 
 ```sh
 nix develop                       # the only supported development entry point
-cargo nextest run --all-features  # 637 tests
+cargo nextest run --all-features  # 645 tests
 nix flake check                   # includes the runtime-root assertion
 
 cargo run -p clyde -- doctor      # what this host can and cannot do
