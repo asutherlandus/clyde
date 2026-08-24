@@ -1,0 +1,20 @@
+[package]
+name = "clyde-broker-api"
+description = "Broker request and response types, shared by clyded and clyde-brokerd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clyde-core.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

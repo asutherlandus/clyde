@@ -10,7 +10,8 @@ The design assumes:
 - build, test, sign, and publish must be **separate environments with different authority**
 - humans and agents act as **actors** within **missions**
 - work happens through **tasks** evaluated by **policy** and run in controlled **environments**
-- the workspace environment may support low-authority code-manipulation scripts, but not the full project build/test toolchain
+- the workspace environment supports low-authority code-manipulation scripts, and deliberately lacks the project build/test toolchain
+- Clyde hosts the agent process inside that workspace environment, so typed tasks are the only path to project execution
 
 ## Recommended reading order
 
@@ -34,6 +35,16 @@ The design assumes:
 10. [Technology and Library Choices](technology-choices.md)
 11. [MVP Implementation Roadmap](mvp-implementation-roadmap.md)
 
+### 4. Implementation decisions and specs
+
+12. [Implementation Decision Log](decisions.md) — binding decisions for Phases 0-4, with rationale, consequences, and open questions
+13. [Schema Reference](schema-reference.md) — entities, state machines, invariants, persistence
+14. [Agent Integration and the Workspace Environment](agent-and-workspace-environment.md)
+15. [Network Egress Model](network-egress-model.md)
+16. Phase specs: [0](phase-0-foundations.md) · [1](phase-1-mission-lease-approval.md) · [2](phase-2-execution-and-isolation.md) · [3](phase-3-dependency-resolution.md) · [4](phase-4-credential-broker.md)
+
+**Start here if you are implementing:** [decisions.md](decisions.md), then the spec for the phase you are working on.
+
 ## Document map
 
 ### Strategy and framing
@@ -53,6 +64,17 @@ The design assumes:
 - [Technology and Library Choices](technology-choices.md)
 - [MVP Implementation Roadmap](mvp-implementation-roadmap.md)
 
+### Implementation decisions and specs
+- [Implementation Decision Log](decisions.md)
+- [Schema Reference](schema-reference.md)
+- [Agent Integration and the Workspace Environment](agent-and-workspace-environment.md)
+- [Network Egress Model](network-egress-model.md)
+- [Phase 0: Foundations](phase-0-foundations.md)
+- [Phase 1: Mission, Lease, and Approval Core](phase-1-mission-lease-approval.md)
+- [Phase 2: Snapshot Execution and Isolation Backends](phase-2-execution-and-isolation.md)
+- [Phase 3: Separate Dependency Resolution](phase-3-dependency-resolution.md)
+- [Phase 4: Credential Broker and Brokered Git Push](phase-4-credential-broker.md)
+
 ## Short summary
 
 The Clyde Next design is centered on this model:
@@ -63,7 +85,7 @@ The Clyde Next design is centered on this model:
 - an **environment** determines where the work happens
 
 In practice, Clyde uses:
-- a **workspace environment** for editing and low-authority code manipulation
+- a **workspace environment** for editing and low-authority code manipulation, which also hosts the agent
 - a **research environment** for web search, documentation reading, and research artifacts
 - a **build environment** for fetch, build, test, and other project execution
 - a **broker environment** for push, sign, publish, and similar privileged actions
@@ -72,4 +94,4 @@ In practice, Clyde uses:
 
 ## Repository context
 
-The repository still contains the legacy Docker-based Clyde implementation in `bin/` and `docker/`, but those components are not the target architecture for Clyde Next. The documents in this directory define the redesign direction.
+This branch contains design and implementation-planning documents only; the legacy Docker-based implementation has been removed. Implementation of Phase 0 has not started.

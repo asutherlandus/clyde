@@ -12,6 +12,8 @@ This document describes a high-level design for a clean-sheet Clyde, hereafter *
 
 It builds on the threat model in [problem-statement-threat-model.md](problem-statement-threat-model.md), the terminology in [terminology.md](terminology.md), and the requirements in [requirements.md](requirements.md).
 
+> **Decision status.** The design here holds, with one change that affects several sections: the coding agent runs *inside* the workspace environment rather than alongside it, and Clyde hosts that process ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)). See [agent-and-workspace-environment.md](agent-and-workspace-environment.md) for the resulting design, and [decisions.md](decisions.md) for the full decision set.
+
 ## Design Thesis
 
 Using the terminology defined in [terminology.md](terminology.md), Clyde Next can be described simply:
@@ -34,36 +36,35 @@ The primary design goal is to preserve the usefulness of agentic coding while en
 At a high level, Clyde Next consists of a trusted control plane coordinating a small number of environments.
 
 ```text
-+--------------------------------------------------------------+
-|                      Human Developer                         |
-|  editor / terminal / review UI / approvals / dashboards      |
-+------------------------------+-------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|                  Workspace Environment                        |
-|  planner, coder, reviewer, repo editor, log/artifact viewer   |
-|  low-authority code-manipulation support                       |
-|  - mutable workspace                                           |
-|  - no raw credentials                                          |
-|  - no direct project build/test execution                      |
-+------------------------------+-------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|                     Clyde Control Plane                       |
-|  policy engine | task scheduler | snapshot manager            |
-|  sandbox manager | audit log | artifact manager               |
-|  approval engine | broker coordinator                         |
-+-----------+----------------------+-------------------+--------+
-            |                      |                   |
-            v                      v                   v
-+---------------------+  +---------------------+  +--------------------+
-| Build Environment   |  | Broker Environment  |  | Artifact Layer     |
-| build/test/fetch    |  | git/ssh/sign/push   |  | snapshots/logs/    |
-| isolated execution  |  | brokered operations |  | outputs/provenance |
-+---------------------+  +---------------------+  +--------------------+
++--------------------------+          +---------------------------------+
+|     Human Developer      |          |     Workspace Environment       |
+|  CLI / TUI / editor      |          |  hosts the agent process        |
+|  approvals, missions     |          |  live scoped workspace (rw)     |
+|                          |          |  edit/codemod tooling only      |
+|                          |          |  no build toolchain             |
+|                          |          |  no credentials                 |
++------------+-------------+          +----------------+----------------+
+             |                                         |
+             | admin channel (human only)              | actor channel
+             |                                         | (MCP + session token)
+             v                                         v
++--------------------------------------------------------------------+
+|                        Clyde Control Plane                          |
+|  policy engine | task scheduler | snapshot manager | egress proxy   |
+|  sandbox manager | session/token manager | audit log | artifacts    |
+|  approval engine | broker gateway                                   |
++-----------+---------------------------+-------------------+---------+
+            |                           |                   |
+            v                           v                   v
++---------------------+  +-----------------------+  +--------------------+
+| Build Environment   |  | Broker (separate proc)|  | Artifact Layer     |
+| build/test/fetch    |  | git push, later sign  |  | snapshots/logs/    |
+| snapshot inputs     |  | credentials in-process|  | outputs/provenance |
+| bwrap -> microVM    |  | never in a sandbox    |  |                    |
++---------------------+  +-----------------------+  +--------------------+
 ```
+
+Two properties of this picture matter more than the boxes. The human's channel and the agent's channel are **separate sockets**, so an agent cannot approve its own escalation. And the agent's environment has no project build toolchain, so the only way project code executes is a typed task request into the control plane.
 
 ## Key Architectural Decision
 
@@ -221,21 +222,23 @@ The developer workspace is the place where humans and agents collaborate on sour
 - provide approval prompts and explain policy decisions
 
 ### Characteristics
-- read/write access to the checked-out repository
+- read/write access to the lease-scoped portion of the checked-out repository
 - no direct mount of signing keys into execution environments
 - separate from untrusted build/test environments
-- paired with separate low-authority edit-execution support for ad hoc code-manipulation scripts
+- hosts the agent process, and therefore *is* the low-authority environment for ad hoc code-manipulation scripts ([D17](decisions.md#d17-workspaceedit-helper-execution-is-the-workspace-environment))
 - can be local-first, with optional remote/self-hosted variants later
 
 ### Design intent
 The workspace is where code is authored and reviewed. It is **not** where untrusted project execution should happen by default.
 
-Clyde should still support agent-authored one-off scripts for editing work, but only as a mode of `workspace.edit` with these strict properties:
-- separate image/runtime from build/test/fetch sandboxes
+Clyde should still support agent-authored one-off scripts for editing work, as `workspace.edit`, with these strict properties:
+- separate runtime root from build/test/fetch sandboxes
 - tooling for text and code manipulation
-- no full project build toolchain available
+- no project build toolchain available
 - no raw credentials
 - no direct publish/sign authority
+
+In the MVP these are properties of the environment the agent already runs in, so no separate sandbox launch is needed and the constraints are enforced by what the runtime root contains.
 
 ## 2. Workspace Environment
 
@@ -397,11 +400,11 @@ Examples:
 - workspace indexing
 - static inspection
 
-#### Hardened container
-For medium-risk tasks or early implementation phases.
+#### Namespace sandbox
+Bubblewrap. For the workspace environment, and for build/test during early bring-up only. Never for a task with network reachability.
 
-#### MicroVM or equivalent strong sandbox
-For high-risk tasks such as:
+#### MicroVM
+Firecracker. Required for high-risk tasks such as:
 - dependency install with lifecycle scripts
 - Rust compile/test
 - browser test
@@ -752,9 +755,9 @@ Clyde Next should define human-visible capability levels.
 ### Level 1: safe execution
 - trusted tools and low-authority edit utility scripts only
 - no project build/test/install code execution
-- no network
+- no egress except the model API allowlist, proxied and logged
 - no credentials
-- no full project build toolchain in edit-helper execution
+- no project build toolchain present in the environment
 
 ### Level 2: untrusted project execution
 - build/test/codegen in isolated sandboxes
@@ -793,38 +796,49 @@ It should not silently auto-approve:
 
 ## CLI examples
 ```bash
-# Open agent workspace
-clyde workspace open
+# Register a project and check host prerequisites
+clyde workspace register .
+clyde doctor
 
-# Ask default agent to implement a change
-clyde agent ask "Add rate limiting to the auth endpoint"
+# Create a mission; Clyde proposes an envelope for approval
+clyde mission create "Add rate limiting to the auth endpoint" --scope backend/auth
 
-# Run helper-driven workspace editing
-clyde workspace edit --path backend/auth -- python /tmp/codemod.py
+# Review and approve the proposed envelope (admin channel)
+clyde mission status
+clyde mission approve m-01J...
 
-# Run a standard typed task
-clyde run rust.check --path backend/
+# Watch what the agent is doing
+clyde task list --follow
+clyde mission status --diff
 
-# Resolve dependencies with registry-only profile
-clyde run rust.resolve-deps --path backend/
+# Handle a boundary crossing
+clyde approvals list
+clyde approvals approve ap-01J... --grant once
 
-# Request a push operation
-clyde publish push --branch feature/rate-limits
+# Request a push (agent side) and approve it (human side)
+clyde approvals approve ap-01J... --grant once
 ```
 
+Task execution is normally requested by the agent rather than typed by the human, but `clyde task run rust.check --path backend/` exists for direct use and for integration tests.
+
 ## Agent-facing API examples
+
+The agent reads and edits files with its own tools, against the mounts its lease permits. There is no `read_code` or `edit_files` call, because path scope is enforced by mount topology rather than by an API check ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)).
+
+What the agent calls Clyde for is everything that crosses a boundary:
+
 ```text
-read_code(paths=["backend/src/auth"])
-edit_files(patch=...)
-edit_files(mode="scripted", path="backend/auth", command="python /tmp/codemod.py")
-run_task(type="rust.check", path="backend/")
-get_task_logs(task_id="...")
-request_capability(
-  task="rust.resolve-deps",
+mission_status()
+list_capabilities()
+run_task(task_type="rust.check", path="backend/")
+task_status(task_run_id="t-01J...")
+task_logs(task_run_id="t-01J...")
+request_escalation(
+  capability="rust.resolve-deps",
   reason="new crate introduced in Cargo.lock",
-  scope="registry-proxy-only",
-  ttl="10m"
+  details={ scope: ["backend/"], egress: "rust-registry" }
 )
+request_subagent(purpose="update login flow", scope=["frontend/login"], tasks=[...], duration="15m")
 request_publish(action="git.push", branch="feature/rate-limits")
 ```
 
@@ -871,14 +885,14 @@ For an initial version, Clyde Next should focus on a narrow but powerful workflo
 
 ### Must-have first slice
 - one human developer
-- one primary coding agent
-- mutable workspace + low-authority scripted editing + typed task runner
-- snapshot-based task inputs for build/test/fetch tasks
-- isolated execution for `rust.check` and `rust.test.unit`
-- no raw SSH/GPG mounting
-- brokered git push
-- approval UX for network and publish actions
-- task logs and policy visibility
+- one primary coding agent, hosted by Clyde in the workspace environment
+- mutable scoped workspace + low-authority scripted editing + typed task runner
+- snapshot-based, build-closure-aware task inputs for build/test/fetch tasks
+- isolated execution for `rust.check` and `rust.test.unit`, on microVM isolation by Phase 2b
+- no raw SSH/GPG mounting anywhere
+- brokered git push, hardened against hostile repository hooks and configuration
+- approval UX for network and publish actions, on a channel no agent can reach
+- task logs, egress records, and policy visibility
 
 ### Defer until later
 - multi-agent collaboration

@@ -1,0 +1,22 @@
+[package]
+name = "clyde-api"
+description = "Wire types, actor-facing view types, MCP tool and JSON-RPC definitions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clyde-core.workspace = true
+clyde-policy.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-std"] }
+
+[lints]
+workspace = true

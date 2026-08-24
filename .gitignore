@@ -39,3 +39,11 @@ temp/
 
 # agent-browser local state
 agent-browser.json
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Nix
+result
+result-*

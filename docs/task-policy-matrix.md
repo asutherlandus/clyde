@@ -19,6 +19,8 @@ This document builds on:
 - [high-level-design.md](high-level-design.md)
 - [mission-lease-model.md](mission-lease-model.md)
 
+> **Decision status.** Runtime classes, the egress vocabulary, and the treatment of `workspace.edit` have been narrowed by [decisions.md](decisions.md). The MVP catalog is closed and encoded as a Rust enum ([Phase 0](phase-0-foundations.md#6-mvp-task-catalog)); this document remains the reference for the full intended catalog.
+
 ## Design Intent
 
 Using the terminology from [terminology.md](terminology.md), this document focuses on two parts of the core Clyde model:
@@ -34,10 +36,13 @@ Instead of a flat command model, Clyde should expose a set of typed tasks with e
 Each task profile should define at least the following dimensions:
 - **environment**
 - **trust class**
+- **minimum isolation level**
 - **input scope**
 - **writable outputs**
-- **network policy**
+- **egress profile** (a named profile, not a free-form network description — see [network-egress-model.md](network-egress-model.md))
 - **credential policy**
+- **cache policy** (none, or mission-scoped — see [D3](decisions.md#d3-build-caches-are-per-mission-and-writable-dependency-caches-are-read-only))
+- **access baseline requirement** (none, or a confirmed baseline required — see [D18](decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift))
 - **human approval policy**
 - **agent autonomy policy**
 - **audit/provenance level**
@@ -56,8 +61,7 @@ Clyde Next should classify tasks into five broad trust classes.
 - trusted built-in tools or agent-authored edit helpers
 - project build/test/install code not executed as code
 - may operate on live workspace within lease scope
-- separate edit-execution support with text/code-manipulation tooling only
-- no full project build toolchain available
+- runs in the workspace environment, whose runtime root contains text/code-manipulation tooling and **no** project build toolchain ([D17](decisions.md#d17-workspaceedit-helper-execution-is-the-workspace-environment))
 - low risk
 
 ### T2: Untrusted offline execution
@@ -80,41 +84,46 @@ Clyde Next should classify tasks into five broad trust classes.
 
 ## Runtime Classes
 
-Clyde should support a small set of runtime classes.
+Clyde supports a small set of runtime classes. A task policy names the **minimum** acceptable class; the sandbox manager may select something stronger but never weaker.
 
 ### R0: In-process trusted operation
-For simple control-plane or workspace actions.
+For control-plane actions: diff computation, commit preparation, policy resolution.
 
 ### R1: Trusted tool runner
 For trusted binaries that inspect or transform files without executing repo code.
 
-### R2: Hardened container
-For low-authority utility execution, medium-risk tasks, or compatibility paths.
+### R2: Namespace sandbox
+Bubblewrap: user/pid/ipc/uts/cgroup/net namespaces, read-only binds, tmpfs scratch, seccomp, cgroup v2 limits ([D5](decisions.md#d5-bubblewrap-first-behind-a-sandboxbackend-trait)).
 
-### R3: MicroVM or equivalent strong sandbox
-Preferred for untrusted build, dependency install, browser, and arbitrary repo execution.
+Used for the workspace environment, and for build/test during Phase 2a bring-up only. Not acceptable for any task with an egress profile other than `none`, and not for T3 tasks.
+
+### R3: MicroVM
+Firecracker, with no guest network device and vsock-bridged egress ([D9](decisions.md#d9-the-firecracker-backend-lands-as-phase-2b-before-dependency-resolution)). Required for untrusted build, dependency fetch, browser, and arbitrary repo execution.
 
 ### R4: Credential broker
-For git push, signing, publish, and credential-mediated actions.
+For git push, signing, publish, and credential-mediated actions, in a separate process that never runs project code.
 
 ## Global Policy Defaults
 
 Unless a task explicitly says otherwise:
-- source inputs come from immutable snapshots
+- source inputs come from immutable snapshots, scoped to the cargo build closure of the requested path
 - repo access is subtree-scoped where possible
 - outputs are written to explicit output channels
 - host home directory is never mounted
-- `~/.ssh`, `~/.gnupg`, browser profiles, cloud config, and Docker sockets are never mounted into untrusted tasks
-- network is denied by default
+- `~/.ssh`, `~/.gnupg`, browser profiles, cloud config, and container runtime sockets are never mounted into any sandbox
+- the egress profile is `none`, which means a loopback-only network namespace and no proxy socket bound at all
 - credentials are unavailable by default
-- tasks are attributable to mission + lease + actor
+- caches are read-only, except the per-mission build cache
+- tasks that execute project code require a confirmed access baseline, and receive the granted subtrees minus absolute exclusions plus any confirmed pins
+- `.git` is never an input to a build task, and cgroup v2 limits are mandatory for T2 and above
+- tasks are attributable to mission + lease + actor + session
 
 ## Task Policy Summary Matrix
 
 | Task | Trust | Runtime | Source input | Writable output | Network | Credentials | Agent autonomy | Approval |
 |---|---|---|---|---|---|---|---|---|
 | `workspace.read` | T0 | R0 | live workspace scoped | none | none | none | yes | none |
-| `workspace.edit` | T0/T1 | R0/R2 | live workspace scoped | repo paths in lease + scratch | none | none | yes | none/policy |
+| `workspace.edit` | T0/T1 | R2 (workspace env) | live workspace scoped | repo paths in lease + scratch | none | none | yes | none |
 | `repo.search` | T0 | R0/R1 | live workspace scoped | none | none | none | yes | none |
 | `format.trusted` | T1 | R1 | snapshot or live scoped | allowed repo paths | none | none | yes | none |
 | `lint.static` | T1 | R1 | snapshot scoped | logs only | none | none | yes | none |
@@ -164,28 +173,27 @@ Purpose:
 - modify files
 - create patches
 - refactor scoped code
-- run scripted or tool-assisted edits against the live workspace
-- support codemods, structured rewrites, batch edits, config updates, and similar editing helpers
+- run codemods, structured rewrites, batch edits, and config updates
 
 Policy:
-- trust: T0 for direct edits, T1 for helper-driven edits
-- runtime: R0 for direct edits, R2 when helper execution is needed
+- trust: T0 for direct edits, T1 when a helper script does the work
+- runtime: the workspace environment (R2)
 - source: live workspace paths within lease
-- writes: lease-scoped repo paths plus isolated scratch when needed
-- network: none
+- writes: lease-scoped repo paths plus isolated scratch
+- egress: `none` from the task's point of view; the environment's only egress is the model API allowlist ([D11](decisions.md#d11-workspace-environment-model-api-egress-goes-through-the-clyde-proxy))
 - credentials: none
 
-Strict execution requirements for helper-driven edits:
-- must use a separate image/runtime from build/test/fetch sandboxes
-- must include tooling for text and code manipulation
-- must not include the full project build toolchain
-- must not be used for repo-defined build/test/install workflows
+**How this is enforced.** Since the agent is hosted inside the workspace environment ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)), `workspace.edit` describes a class of activity rather than a Clyde-launched sandbox ([D17](decisions.md#d17-workspaceedit-helper-execution-is-the-workspace-environment)). The properties that made a separate edit runtime a hard requirement now hold as properties of the agent's own environment:
+- its runtime root is separate from build/test/fetch roots
+- it has text and code manipulation tooling and no project build toolchain
+- its writable set is exactly the lease's edit paths, enforced by bind mounts
+- it has no credentials, no host home, and no container runtime socket
 
 Usage:
-- primary inner-loop operation for agents
+- primary inner-loop activity for agents
 - safe for repeated automation when limited to editing work
-- scripted edit bodies, command lines, and resulting diffs should be auditable
-- if the edit needs project build tooling or broader authority, it must be reclassified into another typed task
+- resulting diffs are auditable at snapshot, task, and closeout boundaries; command-level logging is optional ([OQ3](decisions.md#oq3-exec-logging-shim-in-the-workspace-environment))
+- work that needs the project build toolchain *cannot* run here, because the toolchain is absent. It must become `rust.check`, `rust.test.unit`, or another typed task — which is the intended funnel
 
 ### `repo.search`
 Purpose:
@@ -267,11 +275,15 @@ Purpose:
 Policy:
 - trust: T2
 - runtime: R3 preferred
-- source: immutable snapshot
+- source: immutable snapshot, limited to the confirmed access baseline (subtree grants for approved first-party scope, pins for anything outside it)
 - writes: build outputs and logs only
 - network: none
 - credentials: none
-- caches: read-only dependency inputs; isolated writable build dirs
+- caches: read-only dependency inputs; per-mission writable build dir
+- access baseline: required; drift escalates ([D18](decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift))
+
+Threat note:
+- this task is where hostile transitive dependency code most plausibly executes, via `build.rs` or a proc macro. The controls that matter here are the pre-execution code-execution inventory check and the baselined read set, not the task's own simplicity
 
 Agent guidance:
 - should be a standard pre-authorized inner-loop task
@@ -459,6 +471,9 @@ Policy:
 ## 9. Escape-hatch tasks
 
 ### `shell.untrusted`
+
+> **Not in the MVP catalog.** Deliberately excluded from Phases 0-4 so that the typed task path is the only path, and so that the escape hatch cannot become the default before first-class tasks exist ([roadmap risk 3](mvp-implementation-roadmap.md#risk-3-escape-hatch-becomes-the-default)).
+
 Purpose:
 - permit a narrow compatibility path for arbitrary repo commands that do not yet have a dedicated task type
 
@@ -538,17 +553,24 @@ That means the agent may request those tasks, but the matrix still controls:
 
 This separation prevents agents from redefining task semantics.
 
-## Recommended MVP Matrix
+## MVP Matrix
 
-For an initial implementation, Clyde Next should prioritize these task types:
-- `workspace.read`
-- `workspace.edit`
-- `repo.search`
-- `rust.resolve-deps`
-- `rust.check`
-- `rust.test.unit`
-- `git.push`
-- `artifact.sign` later
+The MVP catalog is **closed** and encoded as a Rust enum, so an unknown task type is unrepresentable rather than a runtime lookup failure:
+
+| Task | Trust | Environment | Min runtime | Input | Egress | Cache | Approval |
+|---|---|---|---|---|---|---|---|
+| `workspace.read` | T0 | workspace | R0/R2 | live, lease-scoped | `none` | none | none |
+| `workspace.edit` | T0/T1 | workspace | R2 | live, lease-scoped | `none` | none | none |
+| `repo.search` | T0 | workspace | R2 | live, lease-scoped | `none` | none | none |
+| `rust.check` | T2 | build | R2 → R3 | snapshot, closure-aware | `none` | mission-scoped | none |
+| `rust.test.unit` | T2 | build | R2 → R3 | snapshot, closure-aware | `none` | mission-scoped | none |
+| `rust.resolve-deps` | T3 | build | R3 | manifests + lockfile only | `rust-registry` | writes dep bundle | human |
+| `git.commit.prepare` | T1 | control plane | R0 | live working tree | `none` | none | none |
+| `git.push` | T4 | broker | R4 | commit id + refspec | `broker` | none | human |
+
+"R2 → R3" means Phase 2a runs the task on the namespace backend during bring-up and Phase 2b moves it to the microVM backend, at which point R3 is the enforced minimum.
+
+`artifact.sign` and `artifact.publish` are post-MVP. `shell.untrusted` is excluded on purpose.
 
 This subset is enough to validate the core least-privilege and agentic workflow model without requiring full ecosystem coverage on day one.
 

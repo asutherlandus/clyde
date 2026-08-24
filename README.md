@@ -10,10 +10,9 @@ In the simplest terms: **an actor works on a mission in a workspace, asks to run
 
 ## Status
 
-This repository currently contains:
+This branch contains the **Clyde Next design and implementation-planning document set** in `docs/`. The legacy Docker-based implementation has been removed.
 
-- the **legacy Docker-based implementation** in `bin/` and `docker/`
-- a new **Clyde Next design document set** in `docs/`
+Implementation decisions for Phases 0-4 are settled and recorded in [docs/decisions.md](docs/decisions.md); each phase has a spec. No code has been written yet — Phase 0 is the next step.
 
 The design direction assumes:
 - untrusted code may execute during build, test, install, and codegen
@@ -22,7 +21,8 @@ The design direction assumes:
 - build, test, sign, and publish must be **separate environments with different authority**
 - humans and agents act as **actors** within **missions**
 - work happens through **tasks** evaluated by **policy** and run in controlled **environments**
-- the workspace environment may support low-authority code-manipulation scripts, but project build/test toolchains remain outside that environment
+- the workspace environment supports low-authority code-manipulation scripts, and project build/test toolchains stay outside it
+- Clyde hosts the coding agent inside that workspace environment, so typed tasks are the only path to project execution
 
 ## Clyde Next document set
 
@@ -42,6 +42,14 @@ Detailed design:
 - [Component Architecture](docs/component-architecture.md)
 - [Technology and Library Choices](docs/technology-choices.md)
 - [MVP Implementation Roadmap](docs/mvp-implementation-roadmap.md)
+
+Implementation decisions and specs:
+
+- [Implementation Decision Log](docs/decisions.md)
+- [Schema Reference](docs/schema-reference.md)
+- [Agent Integration and the Workspace Environment](docs/agent-and-workspace-environment.md)
+- [Network Egress Model](docs/network-egress-model.md)
+- Phase specs: [0](docs/phase-0-foundations.md) · [1](docs/phase-1-mission-lease-approval.md) · [2](docs/phase-2-execution-and-isolation.md) · [3](docs/phase-3-dependency-resolution.md) · [4](docs/phase-4-credential-broker.md)
 
 ## Design summary
 
@@ -63,16 +71,14 @@ Core design ideas:
 - **environments** separate editing, research, build/test execution, and privileged external actions
 - **leases**, **snapshots**, and **brokers** enforce those boundaries
 
-## Legacy implementation
-
-The existing Docker-based Clyde implementation remains in the repository as a reference point during the redesign, but it does **not** represent the target architecture for Clyde Next.
-
 ## Near-term focus
 
-The current design work is primarily focused on:
+The MVP (Phases 0-4) targets one strong end-to-end workflow:
 
-- Rust build/test isolation
-- full-stack dependency and browser-test isolation
-- agent/human interaction design
-- mission/lease/task policy model
-- sandbox and broker architecture for an MVP
+- a mission delegated to an agent hosted in a Clyde-managed workspace environment
+- snapshot-based `rust.check` and `rust.test.unit` with no network and no credentials
+- bubblewrap isolation first, Firecracker microVMs before any network-bearing task
+- approval-gated, registry-only dependency resolution through a Clyde egress proxy
+- brokered `git.push` with no credential reachable from any agent or build sandbox
+
+Full-stack, browser testing, signing, and publishing follow the MVP.

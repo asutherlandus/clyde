@@ -1,0 +1,87 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/clyde-core",
+    "crates/clyde-policy",
+    "crates/clyde-store",
+    "crates/clyde-snapshot",
+    "crates/clyde-sandbox",
+    "crates/clyde-egress",
+    "crates/clyde-git",
+    "crates/clyde-api",
+    "crates/clyde-broker-api",
+    "bin/clyde",
+    "bin/clyded",
+    "bin/clyde-brokerd",
+    "bin/clyde-forward",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/nullpointer/clyde"
+rust-version = "1.92"
+
+[workspace.dependencies]
+# Local crates. Dependency direction is strictly one way:
+# core <- policy <- everything else. clyde-policy must not depend on
+# clyde-store, clyde-sandbox, or tokio (Phase 0 deliverable 3).
+clyde-core = { path = "crates/clyde-core" }
+clyde-policy = { path = "crates/clyde-policy" }
+clyde-store = { path = "crates/clyde-store" }
+clyde-snapshot = { path = "crates/clyde-snapshot" }
+clyde-sandbox = { path = "crates/clyde-sandbox" }
+clyde-egress = { path = "crates/clyde-egress" }
+clyde-git = { path = "crates/clyde-git" }
+clyde-api = { path = "crates/clyde-api" }
+clyde-broker-api = { path = "crates/clyde-broker-api" }
+
+blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+rand = "0.9"
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "process", "sync", "time", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+toml = { version = "0.9", features = ["preserve_order"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ulid = "1"
+webpki-roots = "1"
+ratatui = "0.29"
+crossterm = "0.29"
+
+# dev
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# Panic-prone constructs are denied in production code (AGENTS.md). The CI
+# no-panic lint covers the cases clippy cannot see; these cover the rest.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+manual_let_else = "warn"
+# State transition tables read better as an exhaustive match than as a
+# `matches!` chain, and AGENTS.md prefers exhaustive matching where it improves
+# clarity, so this suggestion is declined project-wide.
+match_like_matches_macro = "allow"
+
+[profile.release]
+debug = 1

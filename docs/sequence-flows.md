@@ -14,6 +14,8 @@ It builds on:
 - [mission-lease-model.md](mission-lease-model.md)
 - [task-policy-matrix.md](task-policy-matrix.md)
 
+> **Decision status.** These flows hold, with two mechanical changes from [decisions.md](decisions.md). Human steps ("Human -> Clyde: approve") happen on the admin channel, which is unreachable from any actor environment ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)). And `edit_files` / `read_code` steps are not API calls: the agent edits the mounts its lease permits directly, and Clyde records diffs at task and closeout boundaries ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)).
+
 ## Participants
 
 Using the terminology from [terminology.md](terminology.md), the flows below are mostly about:
@@ -62,10 +64,15 @@ Clyde -> Human: mission proposal
   - credentials: none
   - duration: 45m
   - sub-agents: 1
-Human -> Clyde: approve mission
-Clyde -> Agent: create or bind primary agent
-Clyde -> Agent: issue primary lease
-Clyde -> Audit Log: record mission + lease issuance
+Human -> Clyde: approve mission                      [admin channel]
+Clyde -> Sandbox Runtime: create workspace environment for primary actor
+  - lease edit paths mounted rw, other permitted paths ro, .git ro
+  - workspace runtime root (no build toolchain)
+  - actor socket + session token file (0400)
+  - egress: model-api profile only
+Clyde -> Agent: start agent process inside that environment
+Clyde -> Agent: issue primary lease + session token
+Clyde -> Audit Log: record mission + lease issuance + session binding
 ```
 
 ### Security properties
@@ -84,48 +91,38 @@ The actor works autonomously inside its lease, editing code, using low-authority
 
 ### Sequence
 ```text
-Agent -> Clyde: read_code(paths=backend/auth)
-Clyde -> Workspace: return scoped file contents
+Agent: read and edit files directly within its mounted scope
+  - out-of-scope writes fail at the kernel; no policy call involved
+  - codemods and helper scripts run in the agent's own environment (T1)
 
-Agent -> Clyde: edit_files(...)
-Clyde -> Workspace: apply patch within lease scope
-Clyde -> Audit Log: record edit batch
-
-Agent -> Clyde: edit_files(mode=scripted, path=backend/auth, command="python /tmp/codemod.py")
-Clyde -> Policy Engine: resolve workspace.edit helper-execution policy
-Policy Engine -> Clyde: T1 / R2 / live-workspace / no-network / no-credentials
-Clyde -> Sandbox Runtime: launch edit-helper runtime with lease-scoped live workspace mount
-Sandbox Runtime -> Clyde: edit result + diff summary + logs
-Clyde -> Agent: edit status + logs reference
-
-Agent -> Clyde: run_task(type=rust.check, path=backend/auth, lease=...)
+Agent -> Clyde: run_task(type=rust.check, path=backend/auth)  [token-authenticated]
 Clyde -> Policy Engine: resolve rust.check policy
 Policy Engine -> Clyde: T2 / R3 / no-network / no-credentials
-Clyde -> Snapshot Manager: snapshot backend/auth subtree
-Snapshot Manager -> Clyde: snapshot id
+Clyde -> Snapshot Manager: snapshot build closure of backend/auth
+Snapshot Manager -> Clyde: snapshot id (records any out-of-lease read-only paths)
 Clyde -> Sandbox Runtime: launch rust.check with snapshot + policy
 Sandbox Runtime -> Artifact Layer: stream logs, outputs, provenance
 Sandbox Runtime -> Clyde: task result
 Clyde -> Agent: task status + logs reference
 
-Agent -> Clyde: run_task(type=rust.test.unit, path=backend/auth, lease=...)
+Agent -> Clyde: run_task(type=rust.test.unit, path=backend/auth)
 Clyde -> Policy Engine: resolve rust.test.unit policy
-Clyde -> Snapshot Manager: snapshot current subtree
-Clyde -> Sandbox Runtime: run unit tests
+Clyde -> Snapshot Manager: snapshot build closure of current subtree
+Clyde -> Sandbox Runtime: run unit tests (mission cache reused, warm)
 Sandbox Runtime -> Artifact Layer: logs + coverage + failure artifacts
-Sandbox Runtime -> Clyde: result
+Sandbox Runtime -> Clyde: result + failure classification
 Clyde -> Agent: logs + failure summary
 
-Agent -> Clyde: edit_files(fix based on failures)
+Agent: edit files to fix failures
 ... repeat until pass or boundary reached ...
 ```
 
 ### Security properties
-- helper-driven edits run in a separate low-authority execution mode with a live scoped workspace mount
-- that edit-helper execution does not carry the full project build/test toolchain
-- build and test still use sealed snapshots, not live mutable mounts
-- no network or credentials are available in the inner loop
-- each task is attributable to mission + lease + actor
+- editing happens in a low-authority environment with a live scoped workspace mount
+- that environment does not carry the project build/test toolchain, so project code cannot execute there
+- build and test use sealed snapshots, not live mutable mounts
+- no egress or credentials are available to build and test at all
+- each task is attributable to mission + lease + actor + session
 
 ### UX notes
 - this should feel fast and nearly continuous
@@ -152,22 +149,25 @@ Agent -> Clyde: request_escalation(
 )
 Clyde -> Policy Engine: evaluate escalation
 Policy Engine -> Clyde: allowed only with approval, registry-only network
-Clyde -> Human: escalation prompt
+Clyde -> Human: escalation prompt                     [admin channel]
   - task: rust.resolve-deps
-  - scope: backend/
-  - network: registry-proxy-only
+  - input: manifests + lockfile only, no application source
+  - egress profile: rust-registry, with the exact host allowlist shown
+  - lockfile change: 4 additions, 0 source changes
   - credentials: none
   - outputs: dependency bundle only
+  - caveat: allowlisting is by destination, not content
 Human -> Clyde: approve once for mission
-Clyde -> Agent: lease updated or side lease issued for rust.resolve-deps
+Clyde -> Agent: side lease issued for rust.resolve-deps, bound to the approval digest
 ```
 
 ### Follow-on execution
 ```text
 Agent -> Clyde: run_task(type=rust.resolve-deps, path=backend/, lease=...)
 Clyde -> Snapshot Manager: snapshot lockfiles + config
-Clyde -> Sandbox Runtime: launch fetch sandbox with registry-only egress
-Sandbox Runtime -> Artifact Layer: dependency bundle + fetch manifest
+Clyde -> Sandbox Runtime: launch fetch sandbox (microVM), loopback-only netns
+Clyde -> Egress Proxy: activate rust-registry allowlist for this task
+Sandbox Runtime -> Artifact Layer: dependency bundle + fetch manifest (all attempts logged)
 Sandbox Runtime -> Clyde: success
 Clyde -> Agent: dependency bundle available
 Agent -> Clyde: rerun rust.check
@@ -181,6 +181,38 @@ Agent -> Clyde: rerun rust.check
 ### UX notes
 - the prompt should explain why the previous safe profile failed
 - Clyde should suggest the narrowest acceptable escalation
+
+## Scenario 3b: New dependency code triggers a pre-execution check
+
+### Intent
+A fetch succeeds, but the new lockfile brings a crate that executes code at build time. The build does not proceed until the human has seen that.
+
+### Sequence
+```text
+Agent -> Clyde: run_task(type=rust.check, path=backend/auth)
+Clyde -> Policy Engine: resolve rust.check policy
+Clyde -> Baseline Store: load confirmed baseline for (workspace, rust.check, backend/auth)
+Clyde -> Inventory Check: recompute code-execution inventory from lockfile + bundle
+Inventory Check -> Clyde: drift
+  + serde_derive_internals 0.29.1  (new proc-macro crate)
+  ~ ring 0.17.8 -> 0.17.9          (build.rs content changed)
+Clyde -> Agent: task refused, inventory confirmation required
+Clyde -> Human: drift prompt                          [admin channel]
+  - 2 changes to code that will execute during your build
+  - diff shown against the pinned baseline, not the whole baseline
+Human -> Clyde: confirm new inventory
+Clyde -> Baseline Store: amend baseline, record confirming actor
+Agent -> Clyde: run_task(type=rust.check, path=backend/auth)   # now proceeds
+```
+
+### Security properties
+- the check runs before the sandbox starts, so new dependency code is surfaced before it executes
+- a same-version content change is reported distinctly from a version upgrade, because it is a tampering signal rather than a normal one
+- the human reviews a diff, not a whole inventory, so the prompt stays readable as the dependency graph grows
+
+### UX notes
+- path drift and code-execution drift should look different: the first is common and low-signal, the second is rare and the reason this control exists
+- if these prompts become routine the control has failed, so prompt frequency is worth measuring against a real repository
 
 ## Scenario 4: Sub-agent creation under a derived lease
 
@@ -201,8 +233,9 @@ Clyde -> Sub-agent: create derived actor
 Clyde -> Sub-agent: issue derived lease
 Clyde -> Audit Log: record parent-child relationship
 
-Sub-agent -> Clyde: edit_files(frontend/login/...)
-Clyde -> Workspace: apply edits within derived scope
+Clyde -> Sandbox Runtime: create narrower workspace environment for sub-agent
+  - only frontend/login mounted rw
+Sub-agent: edits files directly within that narrower mount scope
 
 Sub-agent -> Clyde: run_task(type=web.build, path=frontend/login, lease=derived)
 Clyde -> Snapshot Manager: create scoped snapshot
@@ -367,6 +400,9 @@ Clyde -> Human: push prompt
   - actor: agent:default
 Human -> Clyde: approve
 Clyde -> Credential Broker: push commit abc1234 to origin/feature/refresh-token-rotation
+Credential Broker: verify approval digest independently
+Credential Broker: create sanitised temp repo, fetch commit with hooks/config disabled
+Credential Broker: verify commit id + tree match the approval, then push
 Credential Broker -> Clyde: push success
 Clyde -> Audit Log: record brokered push
 Clyde -> Human + Agent: branch updated
@@ -375,6 +411,8 @@ Clyde -> Human + Agent: branch updated
 ### Security properties
 - no SSH socket or long-lived Git token is mounted into build or agent environments
 - the broker executes the privileged effect outside untrusted code execution sandboxes
+- the broker verifies the approval itself rather than trusting the caller
+- repository hooks and repository git configuration cannot execute during the push
 
 ### UX notes
 - prompts should show exact destination and commit id
@@ -481,12 +519,15 @@ Across all scenarios, Clyde should enforce these rules:
    - missions and leases do not redefine runtime isolation
 
 3. **All meaningful actions are attributable**
-   - mission id, lease id, actor, task id, artifact ids
+   - mission id, lease id, session, actor, task id, artifact ids
 
-4. **Boundary crossings interrupt autonomy**
+4. **No actor can authorise itself**
+   - approvals arrive only on a channel absent from every actor environment
+
+5. **Boundary crossings interrupt autonomy**
    - safe loops continue, authority expansion stops for review
 
-5. **Artifacts move across trust boundaries, not ambient process access**
+6. **Artifacts move across trust boundaries, not ambient process access**
    - outputs are explicit and controlled
 
 ## Suggested UX Surfaces

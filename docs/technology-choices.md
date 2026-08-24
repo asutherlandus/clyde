@@ -13,6 +13,8 @@ This document builds on:
 - [task-policy-matrix.md](task-policy-matrix.md)
 - [mission-lease-model.md](mission-lease-model.md)
 
+> **Decision status.** The choices in this document have been narrowed to binding decisions in [decisions.md](decisions.md). Where earlier drafts recommended rootless Podman and pinned OCI images, those are superseded by a bubblewrap-then-Firecracker backend path and nix-closure runtime roots. The sections below reflect the current decisions and cite the relevant identifiers.
+
 ## Decision Drivers
 
 The technology choices should optimize for these priorities, in order:
@@ -42,12 +44,14 @@ Using the terminology from [terminology.md](terminology.md), this document is mo
 |---|---|---|
 | Control plane daemon | **Rust** | Rust remains primary |
 | CLI/TUI | **Rust** | add editor/web frontends later |
-| Agent integration API | **JSON-RPC over Unix domain socket** | add gRPC / MCP-facing adapters later |
+| Agent integration API | **MCP over Unix domain socket** (JSON-RPC retained for CLI/admin) ([D10](decisions.md#d10-mcp-is-the-primary-actor-facing-api)) | add gRPC for remote deployment later |
 | Config / policy format | **TOML for static config + Rust enums/structs for built-in task policy** | maybe Cedar/OPA-like policy layer later |
 | Mission / lease / audit metadata store | **SQLite** | SQLite first, optional Postgres later |
 | Snapshot storage | **content-addressed filesystem store + tar/zstd bundles** | add overlayfs/reflink optimizations later |
-| Sandbox backend (MVP) | **rootless Podman or rootless Docker-compatible OCI runtime** | add Firecracker / Kata / gVisor class later |
-| Workspace-environment image | **pinned OCI image dedicated to helper-driven `workspace.edit`** | keep separate from build/fetch/browser images |
+| Sandbox backend | **bubblewrap namespace sandbox (Phase 2a), Firecracker microVM (Phase 2b)** ([D5](decisions.md#d5-bubblewrap-first-behind-a-sandboxbackend-trait), [D9](decisions.md#d9-the-firecracker-backend-lands-as-phase-2b-before-dependency-resolution)) | Kata or gVisor only if Firecracker proves impractical |
+| Runtime roots | **nix closures per task family, no OCI images** ([D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images)) | same closures build the Firecracker rootfs |
+| Network egress control | **Clyde CONNECT proxy, socket-bridged into a loopback-only netns** ([D7](decisions.md#d7-registry-only-egress-is-enforced-by-a-clyde-managed-proxy)) | vsock bridge under Firecracker |
+| Actor authentication | **per-session capability tokens, separate admin socket** ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)) | OS-user separation for multi-user hosts later |
 | Task process orchestration | **Tokio-based async task supervisor** | same foundation |
 | Artifact store | **local filesystem blob store + SQLite metadata** | optional S3/OCI/CAS later |
 | Structured logs | **JSON logs + tracing crate** | OpenTelemetry exporter later |
@@ -138,7 +142,7 @@ These are suggested, not final lock-ins.
 
 ### Process/sandbox orchestration
 - `tokio::process`
-- direct invocation of `podman`, `docker`, `bwrap`, `firecracker`, etc. initially
+- direct invocation of `bwrap` (Phase 2a) and the Firecracker API (Phase 2b), behind one `SandboxBackend` trait
 - avoid overcommitting to a heavy orchestration framework before the execution model is proven
 
 ## Control Plane Architecture Choice
@@ -189,6 +193,13 @@ Configured in TOML:
 - which tasks are pre-approved for missions
 - branch naming rules for push
 - synthetic service defaults
+
+### Configuration layering
+Precedence is built-in defaults → host config → user config → `.clyde/policy.toml` in the repository ([D14](decisions.md#d14-machine-readable-policy-in-clyde-agentsmd-advisory-only)).
+
+**Repository configuration may only narrow.** A repo value that would widen authority relative to the layer above is rejected with a diagnostic rather than silently clamped, because a silent clamp leaves the user believing something is configured that is not. Repository content is untrusted, and a repo that can widen its own authority is a self-signed permission slip.
+
+`AGENTS.md` is prose, passed into agent context, and never parsed for authority.
 
 ## Why this hybrid
 A fully dynamic policy engine is not needed for MVP and would add complexity early.
@@ -287,83 +298,70 @@ Attractive for performance in some setups, but too opinionated for Linux-first M
 
 ## Sandbox Backend Choice
 
-## MVP choice
-Use **rootless Podman** as the preferred local sandbox backend.
+## Decision
+Implement a `SandboxBackend` trait with two backends, in this order ([D5](decisions.md#d5-bubblewrap-first-behind-a-sandboxbackend-trait), [D9](decisions.md#d9-the-firecracker-backend-lands-as-phase-2b-before-dependency-resolution)):
 
-Fallback:
-- rootless Docker-compatible backend if necessary
+1. **bubblewrap** (Phase 2a) — namespace isolation, read-only binds, tmpfs scratch, seccomp, cgroup v2 limits applied by clyded
+2. **Firecracker** (Phase 2b) — microVM isolation for untrusted project execution and for everything network-bearing
 
-## Why Podman
-Podman is preferred because:
-- rootless mode is a better fit for least-privilege local execution
-- daemonless architecture reduces one category of ambient privileged service dependency
-- OCI compatibility is good enough for task images and isolated runs
-- integrates well with cgroups and namespace isolation on Linux
+Rootless Podman is **not** implemented.
 
-## What Podman is good enough for in MVP
-- helper-driven `workspace.edit`
-- `rust.check`
-- `rust.test.unit`
-- `rust.resolve-deps`
-- synthetic test service containers
+## Why bubblewrap first
+The stated goal is to reach microVM isolation quickly. Bubblewrap exercises the whole snapshot / task / artifact / cache pipeline at very low startup cost, needs no image build pipeline, and consumes the same nix-closure runtime roots that the Firecracker rootfs is built from. A Podman backend in between would be work discarded on the way to Firecracker.
 
-## Important caveat
-Rootless containers are **not the long-term ideal boundary** for the highest-risk tasks. They are the practical MVP stepping stone.
+## Why not Podman
+Podman's value here was the OCI image model and its ecosystem. With runtime roots defined as nix closures ([D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images)) most of that value disappears, and rootless containers were never the intended long-term boundary for high-risk tasks. Skipping it removes an image-build pipeline and a daemon-adjacent dependency from the MVP.
 
-## Preferred later evolution
-Add a stronger backend class for T2/T3 tasks:
-- **Firecracker** if fast local microVM management is practical
-- **Kata Containers** if integration cost is lower in your environment
-- possibly **gVisor** as an intermediate stronger isolation option
+## What bubblewrap is and is not good enough for
+Acceptable on the namespace backend:
+- the workspace environment, which hosts a semi-trusted agent and has no project build toolchain
+- `rust.check` and `rust.test.unit` during Phase 2a bring-up only
 
-## Recommendation by phase
-- MVP: rootless Podman
-- Phase 2+: add microVM-capable backend abstraction
-- Phase 3+: migrate high-risk tasks to stronger backend by policy
+Not acceptable on the namespace backend:
+- any task with an egress profile other than `none` — which is precisely why Phase 2b precedes Phase 3
+- T3 tasks generally
 
-## Runtime Image Strategy
+## Isolation is policy-driven
+Each task policy declares a `min_isolation`. The sandbox manager may select a stronger backend but never a weaker one, and there is no manual override. A configured downgrade is recorded in the audit log and is unavailable for T3 tasks.
 
-## MVP choice
-Use a small number of pinned OCI images for task families.
+## Host prerequisites
+Both backends need real host capabilities, and the failure modes are unfriendly without diagnostics. See [Phase 0 host prerequisites](phase-0-foundations.md#host-prerequisites) — in particular Ubuntu 24.04's `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks unprivileged user namespaces for nix-store binaries. `clyde doctor` must distinguish that case from user namespaces being unavailable altogether, because the remedies are entirely different.
 
-### Suggested image families
-- `clyde-edit-utility-base`
-- `clyde-rust-base`
-- `clyde-node-base`
-- `clyde-browser-base`
-- `clyde-fetch-base`
+## Runtime Root Strategy
 
-Each should be:
-- pinned by digest
-- minimal
-- reproducible where practical
-- separate from user workspace state
+## Decision
+Each task family executes against a **nix closure** defined in the project flake and identified by its store path ([D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images)). There is no OCI image build, no registry, and no digest-pinning pipeline.
+
+### Runtime roots for the MVP
+- `runtimeRoots.workspace` — text and code manipulation tooling for the workspace environment
+- `runtimeRoots.rust` — Rust toolchain for check/test/build
+- `runtimeRoots.fetch` — cargo plus network client tooling for dependency resolution
+
+Under bubblewrap the closure is bind-mounted read-only. Under Firecracker the guest rootfs is built from the same closure, so runtime-root identity is stable across backends.
 
 ## Why
-This reduces runtime drift and lets task policy choose a known base.
+The flake is already the source of truth for tooling ([AGENTS.md](../AGENTS.md#tooling-source-of-truth)). Reusing it for runtime roots gives content-pinned reproducibility for free, keeps one definition of "the Rust toolchain we use", and removes upstream base-image trust from the supply chain.
 
-## Strict requirement for the workspace environment image
-`clyde-edit-utility-base` must be a separate image/runtime from build/test/fetch images.
-This is a hard architectural requirement, not a nice-to-have.
+## Cost accepted
+nix becomes a requirement on any host that executes tasks, not only on developer machines. That is a deliberate narrowing of portability for the MVP.
 
-It should include tooling for text and code manipulation such as:
+## Strict requirement for the workspace runtime root
+`runtimeRoots.workspace` must be separate from the build/test/fetch roots. This is a hard architectural requirement, not a preference.
+
+It should include:
 - shell utilities
-- search/filter tools
-- structured text/code transformation helpers
-- interpreters suitable for one-off codemods
+- search and filter tools
+- structured text and code transformation helpers
+- an interpreter suitable for one-off codemods
 
-It must not include the full project build toolchain.
-In particular, the workspace environment should not become a disguised dev container for:
-- project compilation or test toolchains
-- package-manager install/fetch workflows
-- browser/e2e stacks
-- signing/publishing tools
-- container runtime access
+It must not include the project build toolchain: no `cargo`, `rustc`, `rustup`, `node`, `npm`/`pnpm`/`yarn`, browser, `gpg`, `ssh`, `docker`, or `podman`.
+
+Because a runtime root is a derivation, this is checkable rather than merely reviewable: [Phase 0](phase-0-foundations.md#2-runtime-root-assertion-test) requires a test that inspects the closure and fails if any of those appear.
 
 ## Not recommended
-- one giant mutable dev image for everything
-- on-the-fly package installation during offline compile/test tasks
-- reusing build/test images as the workspace-environment image
+- one mutable runtime root shared across task families
+- installing packages inside a sandbox at task time
+- reusing the build runtime root as the workspace runtime root
 
 ## Artifact Store Choice
 
@@ -471,6 +469,8 @@ The key design rule is more important than the exact tool:
 
 ## Browser Test Technology
 
+> Post-MVP: browser and synthetic-service work belongs to Phase 5, outside the Phase 0-4 boundary. The choices below remain the intended direction.
+
 ## MVP choice
 Use **Playwright** in a dedicated sandboxed task profile.
 
@@ -537,21 +537,34 @@ IDE integration is valuable, but a CLI/TUI-first core:
 
 ## Agent Integration API Choice
 
-## MVP choice
-Expose a **local JSON-RPC API over Unix socket** for agent clients.
+## Decision
+Expose the actor-facing API as **MCP over a Unix domain socket** from Phase 1, with JSON-RPC retained for the CLI and admin surface ([D10](decisions.md#d10-mcp-is-the-primary-actor-facing-api)). One internal command model, two transports.
 
-## Why
-This is sufficient for:
-- local agent processes
-- TUI/CLI integration
-- sub-agent creation flows
-- mission-aware tool invocation
+## Why MCP first
+It makes the MVP drivable by an existing MCP-capable agent with no bespoke adapter, so the delegation workflow is provable in Phase 1 rather than at the end of the roadmap.
+
+## What is deliberately not in the API
+File reading and editing are not tools. The agent runs inside a workspace-environment sandbox and uses its own filesystem tools; edit scope is enforced by mount topology ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)). That is both a stronger boundary than an API check and the reason an off-the-shelf agent works unmodified.
+
+## Tool descriptions are security UX
+Each tool description states the policy consequences of calling it: whether it can cause network access, whether it needs approval, and what it will refuse. The agent's understanding of its constraints comes from these descriptions, so vagueness there produces an agent that asks for the wrong things.
 
 ## Later evolution
-Add adapters for:
-- MCP-like tool interfaces
-- editor plugins
-- gRPC for remote deployment scenarios
+Editor plugins, and gRPC if remote deployment is added.
+
+## Actor Authentication and Socket Topology
+
+## Decision
+Three Unix sockets with distinct trust properties ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)):
+
+| Socket | Callers | Mounted into sandboxes | Authentication |
+|---|---|---|---|
+| `clyded.sock` | actors (agents, sub-agents) | yes, workspace environments only | session capability token |
+| `clyded-admin.sock` | the human operator | never | `0600` plus `SO_PEERCRED` |
+| `brokerd.sock` | clyded only | never | `SO_PEERCRED`, plus independent approval verification |
+
+## Why the split
+"The human approves boundary crossings" is only enforceable if an agent cannot impersonate the human. With one socket and a self-declared actor identity, the agent whose escalation is under review can approve it. Splitting the channel makes self-approval structurally impossible rather than policy-prohibited, and `clyde approve` refusing to run inside a sandbox is the visible form of that.
 
 ## Packaging and Distribution
 
@@ -560,7 +573,7 @@ Ship Clyde as:
 - one primary Rust binary for CLI/TUI
 - one local daemon binary
 - optional one broker binary if separated at process level
-- a small set of pinned OCI images
+- a set of nix-built runtime root closures
 
 ## Why
 This keeps installation and versioning manageable.
@@ -595,23 +608,26 @@ This keeps installation and versioning manageable.
 
 ## Explicit MVP Technology Choices
 
-For clarity, the recommended MVP implementation stack is:
+For clarity, the MVP implementation stack is:
 
 - **Language:** Rust
-- **Daemon model:** local daemon + CLI/TUI client
-- **IPC:** Unix domain socket + JSON-RPC
-- **Config format:** TOML
-- **Policy representation:** built-in typed policies in Rust + TOML overlays
+- **Process model:** three binaries — `clyde` (CLI/TUI), `clyded` (control plane), `clyde-brokerd` (broker) ([D15](decisions.md#d15-three-binaries-from-phase-0))
+- **IPC:** Unix domain sockets; MCP for actors, JSON-RPC for CLI and admin
+- **Socket topology:** separate actor, admin, and broker sockets ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel))
+- **Config format:** TOML, layered, repository config narrow-only
+- **Policy representation:** built-in typed policies in Rust plus TOML overlays
 - **Metadata DB:** SQLite
-- **Artifact store:** local filesystem blobs + SQLite metadata
+- **Artifact store:** local filesystem blobs plus SQLite metadata
 - **Hashing:** BLAKE3 locally, SHA-256 where external compatibility matters
-- **Logging:** tracing + JSON logs
-- **Sandbox backend:** rootless Podman
-- **Runtime images:** pinned OCI images by environment and task type, including a separate helper-driven `workspace.edit` image
-- **Browser runner:** Playwright in isolated sandbox
-- **Credential broker:** separate local Rust daemon over Unix socket
-- **Git broker implementation:** git CLI in broker
-- **Signing broker implementation:** broker wraps gpg/ssh signing tools initially
+- **Logging:** tracing plus JSON logs, with hash-chained audit events in SQLite
+- **Sandbox backends:** bubblewrap (Phase 2a) then Firecracker (Phase 2b), behind one trait
+- **Runtime roots:** nix closures per task family, no OCI images
+- **Caches:** read-only dependency bundles, per-mission writable build cache ([D3](decisions.md#d3-build-caches-are-per-mission-and-writable-dependency-caches-are-read-only))
+- **Egress control:** Clyde CONNECT proxy, socket-bridged into a loopback-only network namespace
+- **Client:** CLI through Phase 3, TUI in Phase 4 ([D13](decisions.md#d13-cli-through-phases-1-3-tui-in-phase-4))
+- **Credential broker:** separate local Rust daemon over a Unix socket, developer credential held in-process only ([D8](decisions.md#d8-brokered-gitpush-uses-the-developers-existing-credential-inside-the-broker-only))
+- **Git implementation:** git CLI, invoked through a single sanitised-invocation helper that disables hooks and neutralises system, global, and repository configuration
+- **Browser and synthetic services:** post-MVP (Phase 5)
 
 ## Known Future Upgrades
 
@@ -626,13 +642,13 @@ These are not MVP requirements, but the architecture should keep room for them:
 
 ## Summary
 
-The recommended implementation strategy for Clyde Next is intentionally conservative:
+The implementation strategy for Clyde Next is intentionally conservative:
 - Rust for the trusted core
 - SQLite and filesystem storage for local-first durability
 - TOML plus built-in typed policies for understandable configuration
-- rootless Podman for MVP execution isolation
+- nix closures as runtime roots, with bubblewrap giving way quickly to Firecracker
 - a separate broker daemon for privileged authority
-- JSON-RPC over Unix sockets for clean local interfaces
+- Unix sockets for clean local interfaces, split by trust level
 
 This stack is not the final endpoint, but it is a practical path to proving Clyde's core thesis:
 

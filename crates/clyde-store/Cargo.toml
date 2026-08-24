@@ -1,0 +1,22 @@
+[package]
+name = "clyde-store"
+description = "Repository traits, SQLite and in-memory stores, migrations, audit chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clyde-core.workspace = true
+clyde-policy.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

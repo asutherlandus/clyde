@@ -6,6 +6,8 @@ This document defines requirements for a clean-sheet version of Clyde designed t
 
 It assumes the threat model described in [problem-statement-threat-model.md](problem-statement-threat-model.md).
 
+> **Decision status.** Requirements here are unchanged in intent, but several have been made mechanical by the decisions in [decisions.md](decisions.md) — notably agent hosting (A4), actor authentication (P), egress enforcement (C), and the runtime requirements in section I.
+
 ## Product Goal
 
 Clyde must provide a development platform where untrusted project code, dependencies, build scripts, tests, and agent-requested execution can be run with fine-grained isolation over:
@@ -52,8 +54,9 @@ Environment used for:
 - viewing logs and artifacts
 - running low-authority helper scripts for ad hoc code manipulation
 - requesting task execution
+- **hosting the coding agent process itself** ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment))
 
-This environment must not directly expose publish, signing, raw credential capabilities, or the full project build/test toolchain.
+This environment must not directly expose publish, signing, raw credential capabilities, or the full project build/test toolchain. Because the agent runs inside it, the absence of the build toolchain is what makes typed tasks the only path to project execution.
 
 Repo-local agent guidance such as `AGENTS.md` should be readable from this environment and should be available as an input to agent behavior, mission defaults, and workspace-edit guidance.
 
@@ -141,19 +144,31 @@ Clyde may support arbitrary commands, but it shall classify them into explicit r
 Arbitrary commands shall not bypass policy enforcement.
 
 #### A3. Helper-driven workspace editing
-Clyde shall support a low-authority helper-execution mode as part of `workspace.edit` for agent-authored ephemeral scripts that manipulate the live workspace.
+Clyde shall support low-authority execution of agent-authored ephemeral scripts that manipulate the live workspace, as part of `workspace.edit`.
 
-This mode shall be treated as distinct from build/test/fetch execution and shall enforce all of the following:
+In the MVP this is satisfied by the workspace environment itself rather than by a separately launched sandbox, because the agent already runs in exactly such an environment ([D17](decisions.md#d17-workspaceedit-helper-execution-is-the-workspace-environment)). The requirement is unchanged: this execution shall be distinct from build/test/fetch execution and shall enforce all of the following:
 - live workspace access limited to the lease-scoped repository paths
 - writable outputs limited to allowed repo paths and isolated scratch space
 - no raw credentials
 - no host home directory, unrelated projects, browser state, or container runtime sockets
-- no external network by default
-- a separate image/runtime from build/test/fetch task environments
+- no external network except the configured model API allowlist, proxied and logged
+- a separate runtime root from build/test/fetch task environments
 - tooling for text and code manipulation
-- no full project build toolchain available inside the edit-helper runtime
+- no project build toolchain available inside that runtime
 
-If a command requires the project build toolchain, executes repo-defined build/test/install code, or needs broader authority, it shall run as a different typed task under the appropriate policy rather than as workspace editing.
+If a command requires the project build toolchain, executes repo-defined build/test/install code, or needs broader authority, it shall run as a different typed task under the appropriate policy rather than as workspace editing. This shall be enforced by the absence of that tooling from the workspace runtime root, not only by policy text, and that absence shall be verified by an automated test.
+
+#### A4. Agent hosting
+The coding agent process and every sub-agent process shall run inside a Clyde-managed workspace-environment sandbox, not on the host ([D1](decisions.md#d1-the-coding-agent-runs-inside-a-clyde-managed-workspace-environment)).
+
+Each such sandbox shall:
+- mount the lease's edit paths read-write, and other permitted paths read-only
+- mount `.git` read-only, so repository hooks and configuration cannot be planted by an actor
+- mount the actor socket, but never the admin or broker socket
+- receive a session capability token as a file with mode `0400`
+- have no host home directory, no credentials, and no egress except the model API allowlist
+
+Editing authority shall be enforced by mount topology, so that an out-of-scope write fails at the kernel rather than at a policy check.
 
 ### B. Filesystem isolation
 
@@ -178,18 +193,29 @@ The following shall not be mounted into untrusted build and test sandboxes by de
 - unrelated projects
 
 #### B5. Cache isolation
-Clyde should support isolating caches by project, trust level, and task type to reduce cross-contamination and persistence risks.
+Clyde shall isolate caches to prevent cross-contamination and persistence.
+
+Specifically ([D3](decisions.md#d3-build-caches-are-per-mission-and-writable-dependency-caches-are-read-only)):
+- dependency caches shall be content-addressed and mounted read-only
+- writable build caches shall be scoped to a single mission and destroyed at mission closeout
+- no cache shall be shared across missions, across projects, or with the host's own package-manager caches
 
 ### C. Network isolation
 
 #### C1. Deny-by-default execution
 Compile, build, codegen, and most test tasks shall run with no external network access by default.
 
+Deny-by-default shall be structural: a task with egress profile `none` shall receive a loopback-only network namespace with no proxy socket bound, so that "no network" is the absence of a channel rather than a configuration flag ([D7](decisions.md#d7-registry-only-egress-is-enforced-by-a-clyde-managed-proxy)).
+
 #### C2. Separate fetch stage
 Dependency download and update operations shall run in a distinct task or stage from compilation.
 
 #### C3. Destination-scoped egress
-When network is allowed, policy shall be able to restrict access by destination, protocol, and purpose.
+When network is allowed, policy shall restrict access by destination, and shall do so from outside the sandbox.
+
+Egress shall be expressed as one of a closed set of named **egress profiles**, enforced by a host-side proxy that the sandbox reaches over a bound socket, with every attempt recorded whether allowed or refused. No code inside a sandbox shall be able to widen its own reachability. See [network-egress-model.md](network-egress-model.md).
+
+The limits of this mechanism shall be stated in approval prompts: allowlisting is by destination, not by content.
 
 #### C4. Synthetic test networks
 Clyde should support isolated internal test networks for integration and browser tests using fake or local-only services.
@@ -238,6 +264,38 @@ Clyde should support policy over Rust dependency sources, including restrictions
 #### E5. Build observability
 Clyde should capture enough build execution metadata to identify suspicious subprocesses, file access patterns, and blocked network attempts when feasible.
 
+#### E6. Pinned build access baseline
+Build and test tasks shall run against a confirmed access baseline recorded in Clyde's own state, covering:
+- the repository content the task may read, as **subtree grants** for first-party project code within the mission-approved scope, plus individually confirmed **file pins** for anything outside it
+- the inventory of dependency packages that execute code at build time — `build.rs` and proc-macro crates — by crate, version, and source content hash
+
+Path enforcement shall be by materialisation, so the task receives the granted subtrees minus absolute exclusions, plus the pins, and nothing else. A task with no confirmed baseline shall be refused, not run with wider access.
+
+Absolute exclusions — secret-shaped files, key material, build output directories, and `.git` by default — shall be applied before grants and shall not be admissible by a grant.
+
+Ordinary development within a granted subtree — creating, renaming, moving, or deleting files — shall not constitute drift and shall not require approval. The authority for those paths was granted when the human approved the mission envelope.
+
+The baseline shall not be stored in the repository, because repository content is untrusted and an attacker able to edit the baseline could conceal drift ([D18](decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift)).
+
+#### E7. Drift detection and pre-execution ordering
+Clyde shall escalate when observed build access diverges from the baseline:
+- a read outside the granted subtrees and confirmed pins, including a new in-repo path dependency on a crate outside the approved scope
+- a new code-executing dependency, a version change to one, or a content change at the same version
+
+Path drift and dependency drift shall be presented distinctly, since they carry different signal and warrant different scrutiny.
+
+The code-execution inventory check shall run **before** the task's sandbox starts, so that newly arrived dependency code is surfaced before it executes rather than after.
+
+#### E8. Learn mode is privileged
+Any mode that runs a build with auto-admitted access for the purpose of recording a baseline shall be:
+- invocable only by a human on the admin channel
+- unavailable to any actor, and never selected by Clyde as a fallback
+- limited to a single run
+- recorded distinctly in the audit log
+- without effect until a human confirms the resulting proposal
+
+Clyde shall propose a baseline from static analysis of the build closure so that learn mode is the exception rather than the normal path.
+
 ### F. Full-stack and frontend requirements
 
 #### F1. Treat package installation as untrusted
@@ -266,6 +324,26 @@ The fact that an agent can edit code shall not imply permission to execute untru
 #### G4. Capability requests
 Agents should be able to request additional capabilities with a stated reason, desired scope, and time limit, subject to policy and approval.
 
+Denials shall be structured and actionable: what was denied, which constraint denied it, and what narrower or escalated alternative exists. An agent given a bare denial will either loop or try to route around the boundary, and both outcomes are worse than a clear next step.
+
+## P. Actor identity and authority separation
+
+### P1. Session-bound authority
+Every actor session shall be bound to a lease by a capability token issued by Clyde. Every side-effecting request shall carry that token, and shall be rejected if the token is unknown, expired, or revoked ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)).
+
+Tokens shall be stored hashed, delivered only into the actor's sandbox as a file with mode `0400`, never passed in `argv` or environment, never logged, and never returned by any query.
+
+### P2. Separate human approval channel
+Approvals shall be accepted only on a human-only channel that is not reachable from any sandbox. No actor-facing operation shall grant, consume, or modify an approval.
+
+This shall be structural rather than policy-based: the approval socket shall not exist in any sandbox mount table, and the approval command shall refuse to run inside a sandbox.
+
+### P3. Independent verification at authority boundaries
+A component that performs a privileged effect shall verify the approval record itself rather than trusting a caller's assertion that approval exists.
+
+### P4. Approval binding
+An approval shall be bound to a digest of the exact normalised request it authorises. A request differing in any authority-relevant field shall not match, and shall require a new approval. Single-use approvals shall be consumed transactionally with the action they authorise.
+
 ### H. Artifact flow and provenance
 
 #### H1. Controlled outputs
@@ -291,27 +369,33 @@ Clyde should support generation of provenance or attestation metadata for build 
 
 ### I. Sandbox runtime
 
-#### I0. Separate low-authority edit runtime
-Clyde shall provide a separate runtime for helper-driven `workspace.edit` and similar workspace-environment editing support.
+#### I0. Separate low-authority workspace runtime
+Clyde shall provide a workspace runtime that is separate from build/test/fetch runtimes.
 
-This runtime shall be a strict design requirement, not an implementation preference. It shall:
+This shall be a strict design requirement, not an implementation preference. It shall:
 - be separate from build/test/fetch runtimes
 - provide tooling for text and code manipulation
-- omit the full project build toolchain
-- deny credentials and external network by default
+- omit the project build toolchain, verified by an automated test over the runtime root's contents
+- deny credentials, and deny egress other than the configured model API allowlist
 - mount only lease-scoped live workspace paths plus isolated scratch space
 
 #### I1. Strong isolation for untrusted execution
-Clyde shall support a stronger isolation boundary than a general shared development shell for untrusted tasks. Ephemeral microVMs or similarly hardened sandboxes are preferred for higher-risk execution.
+Clyde shall support a stronger isolation boundary than a general shared development shell for untrusted tasks. Ephemeral microVMs are the intended boundary for higher-risk execution.
+
+Each task policy shall declare a minimum isolation level. The sandbox manager may select a stronger backend, and shall never select a weaker one. Any configured downgrade shall be audited, and shall be unavailable for T3 tasks. No task with an egress profile other than `none` shall run below microVM isolation ([D5](decisions.md#d5-bubblewrap-first-behind-a-sandboxbackend-trait), [D9](decisions.md#d9-the-firecracker-backend-lands-as-phase-2b-before-dependency-resolution)).
 
 #### I2. Ephemerality
 Untrusted task environments shall be short-lived and destroyed after completion unless retained explicitly for debugging.
 
-#### I3. Read-only base images
-Clyde should use pinned, reproducible, read-only base images or equivalent runtime roots where practical.
+#### I3. Read-only, content-pinned runtime roots
+Clyde shall execute tasks against read-only, content-pinned runtime roots.
+
+In the MVP these are nix closures identified by store path rather than OCI images ([D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images)). The requirement is the property — reproducible, read-only, content-identified — not the packaging format.
 
 #### I4. Resource controls
 Each task shall support memory, CPU, time, and process-count limits.
+
+For trust class T2 and above these limits shall be enforced by cgroup v2. Where cgroup v2 delegation is unavailable, such tasks shall be refused; there shall be no configuration that permits untrusted project execution under process-level rlimits alone ([D22](decisions.md#d22-no-degraded-resource-limits-for-untrusted-execution)).
 
 ### J. Policy engine
 
@@ -360,7 +444,9 @@ Clyde may provide an explicit unsafe or compatibility mode, but it shall be clea
 - The initial target may be Linux-first, but the architecture should avoid unnecessary coupling to a single host deployment model.
 
 ### O. Testability
-- Policy resolution, capability decisions, and broker interfaces should be testable independently of a full end-to-end runtime.
+- Policy resolution, capability decisions, and broker interfaces shall be testable independently of a full end-to-end runtime.
+- Policy resolution, lease derivation, egress profile ordering, and budget charging shall be pure functions with no I/O dependency.
+- The system's security claims shall be expressed as automated tests, including: no credential path in any generated sandbox mount table; egress refusal from a `none`-profile sandbox; cache non-persistence across missions; no code execution during a brokered push against a repository containing hostile hooks and configuration.
 
 ## Out of Scope for the First Version
 

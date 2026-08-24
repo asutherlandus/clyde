@@ -12,6 +12,8 @@ This document builds on:
 - [requirements.md](requirements.md)
 - [high-level-design.md](high-level-design.md)
 
+> **Decision status.** The model here is unchanged. Three implementation constraints now apply: one active mission per workspace ([D16](decisions.md#d16-one-active-mission-per-workspace)), leases are bound to running actors by session tokens ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)), and each mission owns a writable build cache destroyed at closeout ([D3](decisions.md#d3-build-caches-are-per-mission-and-writable-dependency-caches-are-read-only)). Field-level schemas live in [schema-reference.md](schema-reference.md).
+
 ## Summary
 
 Using the terminology from [terminology.md](terminology.md), this document focuses on one part of the core Clyde model:
@@ -267,7 +269,7 @@ The following invariants should hold.
 An actor must not gain authority merely by existing in a session or process tree.
 
 ## I2. Lease required for action
-Every agent action with side effects must be attributable to an active lease.
+Every agent action with side effects must be attributable to an active lease, through a session token bound to that lease. Process ancestry, user id, and self-declared actor identity confer nothing.
 
 ## I3. Derived leases cannot widen privilege
 A child lease must never exceed the parent lease in scope, task rights, network, credential access, duration, or authority.
@@ -280,6 +282,9 @@ Revoked leases must not authorize further edits, task requests, or sub-agent cre
 
 ## I6. Credentials are brokered separately
 A lease may authorize a request for a brokered operation, but it must not directly contain raw credentials.
+
+## I6b. No actor may approve its own escalation
+An actor cannot grant, consume, or modify an approval. Approvals happen on a channel that is not reachable from any actor environment ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)).
 
 ## I7. Task execution remains policy-bound
 A lease authorizes asking for a task, not bypassing the task policy engine.
@@ -346,11 +351,13 @@ A mission completes when:
 - policy denies further escalation
 
 ## Phase 6: Closeout
-On closeout, Clyde should:
-- revoke active leases
-- terminate or detach derived actors
+On closeout, Clyde should, in one transaction:
+- revoke active leases and their session tokens
+- tear down actor sandboxes and terminate derived actors
+- delete the mission's writable build cache
+- compute and store the closing workspace diff
 - preserve audit and artifacts according to policy
-- summarize changes, task history, and escalations
+- summarize changes, task history, escalations, and egress attempts
 
 ## Lease Lifecycle
 
@@ -358,7 +365,7 @@ On closeout, Clyde should:
 A lease is issued only after mission approval and policy evaluation.
 
 ## Activation
-A lease becomes active when attached to an actor session or agent instance.
+A lease becomes active when attached to an actor session. Attachment means Clyde creates the actor's workspace-environment sandbox with mounts derived from the lease scope, issues a session token into it, and starts the actor process there. A lease's scope is therefore realised as a mount table, not only as a policy record.
 
 ## Use
 Each action consumes some amount of lease budget, such as:
@@ -419,8 +426,11 @@ expires_at: 2026-02-15T17:20:00Z
 - parent cannot create unbounded descendants
 - child cannot outlive mission without explicit renewal
 - child cannot broaden repo scope
-- child cannot request stronger network or credential scopes than parent
+- child cannot request stronger network or credential scopes than parent — note that some egress profiles are incomparable rather than ordered, and an incomparable request is an escalation, not a derivation ([profile ordering](network-egress-model.md#profile-ordering))
 - child publish rights default to false
+- the MVP permits one level of derivation: a child cannot spawn further children
+
+The normative form of these constraints is the eight-rule check in [schema-reference.md](schema-reference.md#derivation-rules-normative).
 
 ## Budgets and Quotas
 

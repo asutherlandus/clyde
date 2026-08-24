@@ -6,6 +6,27 @@ This file defines repo-local guidance for humans and coding agents working on Cl
 
 Clyde is security-critical software. It coordinates isolated environments, handles authority boundaries, and must protect credentials and other sensitive material. Code quality, failure handling, and security hygiene are core requirements, not optional refinements.
 
+## Design documents and decisions
+
+Before implementing anything, read [docs/decisions.md](docs/decisions.md). It records the binding implementation decisions for Phases 0-4 with rationale, consequences, and the open questions that are still undecided.
+
+### Reading order for implementation work
+1. [docs/decisions.md](docs/decisions.md) — what has been decided and why
+2. the spec for the phase being worked on: [Phase 0](docs/phase-0-foundations.md), [Phase 1](docs/phase-1-mission-lease-approval.md), [Phase 2](docs/phase-2-execution-and-isolation.md), [Phase 3](docs/phase-3-dependency-resolution.md), [Phase 4](docs/phase-4-credential-broker.md)
+3. [docs/schema-reference.md](docs/schema-reference.md) for entity definitions, state machines, and invariants
+4. [docs/agent-and-workspace-environment.md](docs/agent-and-workspace-environment.md) and [docs/network-egress-model.md](docs/network-egress-model.md) for the two subsystems whose design is least obvious from the code
+
+The remaining documents in `docs/` are the conceptual design set. They are consistent with the decisions but are background rather than instructions.
+
+### Conventions
+- **Cite decision identifiers.** When code or a commit implements a decision, reference it as `D7`, `D18`, and so on. When a comment explains why a boundary exists, cite the decision rather than restating the rationale.
+- **Do not re-litigate settled decisions.** If a decision looks wrong, say so and explain why; do not quietly implement something else. The decision log exists so that the same arguments are not had twice.
+- **Open questions are marked `OQ`.** If work reaches one, stop and ask rather than picking an answer. Each open question records a proposed resolution, which is a starting point for the discussion, not a default.
+- **Update the docs with the code.** A change to a boundary, schema, or policy semantics changes a document too. A decision reversed in code but not in `decisions.md` is worse than no decision log at all.
+
+### Current state
+The repository contains design and implementation-planning documents only. No implementation code exists yet; Phase 0 is the next step. There is no flake yet — creating it is the first Phase 0 deliverable, which is why the tooling rules below cannot be verified against a working environment today.
+
 ## Tooling source of truth
 
 The project's **Nix flake is the source of truth for all development tooling dependencies**.

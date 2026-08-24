@@ -1,0 +1,33 @@
+[package]
+name = "clyded"
+description = "Clyde control plane daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clyde-api.workspace = true
+clyde-broker-api.workspace = true
+clyde-core.workspace = true
+clyde-egress.workspace = true
+clyde-git.workspace = true
+clyde-policy.workspace = true
+clyde-sandbox.workspace = true
+clyde-snapshot.workspace = true
+clyde-store.workspace = true
+chrono.workspace = true
+clap.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

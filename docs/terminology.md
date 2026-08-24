@@ -132,7 +132,7 @@ Short version:
 At the domain level, Clyde uses four main environment types.
 
 ## Workspace environment
-A **workspace environment** is a low-authority environment for editing and code-manipulation work.
+A **workspace environment** is a low-authority environment for editing and code-manipulation work. It is also where the coding agent itself runs.
 
 Use it for:
 - direct file edits
@@ -141,14 +141,15 @@ Use it for:
 - batch edits
 - structured rewrites
 - one-off helper scripts that operate on source files
+- hosting an actor (the agent process)
 
 Properties:
 - uses the live mutable workspace
-- scoped to allowed repo paths
+- scoped to allowed repo paths, enforced by mount topology
 - may write within allowed workspace scope
 - no raw credentials
-- no broad network by default
-- no full project build toolchain
+- no egress except the model API allowlist
+- no project build toolchain
 
 At the task level, these activities can all be treated as forms of **workspace editing** rather than as a separate top-level kind of work.
 
@@ -218,6 +219,47 @@ A **boundary crossing** is a requested action outside the current approved missi
 ## Snapshot
 A **snapshot** is an immutable copy of workspace inputs used by a build environment.
 
+Snapshot scope is the build closure of the requested path, not the actor's edit scope: a build tool generally cannot compile a subtree without the surrounding manifests and path dependencies.
+
+## Runtime root
+A **runtime root** is the read-only set of tools a task executes against.
+
+Each task family has its own runtime root, and the workspace runtime root deliberately contains no project build toolchain. In the MVP a runtime root is a nix closure identified by its store path.
+
+## Egress profile
+An **egress profile** is a named network reachability level attached to a task policy and bounded by a lease.
+
+The set of profiles is closed. `none` means a loopback-only namespace with no channel out at all; other profiles allow a specific allowlist through a Clyde-managed proxy.
+
+## Session token
+A **session token** is the capability that binds a running actor process to a lease.
+
+An actor's requests are authorised by its token, not by its position in a process tree, its user id, or its own claim about who it is.
+
+## Admin channel
+The **admin channel** is the human-only interface for creating missions and making approvals.
+
+It is never reachable from an actor's environment. That unreachability is what makes an approval mean something.
+
+## Mission cache
+A **mission cache** is the writable build cache created for one mission and destroyed when it closes.
+
+It keeps the inner loop fast without letting build state persist across unrelated work.
+
+## Access baseline
+An **access baseline** is the confirmed record of what a build task is allowed to read, and which dependencies execute code during it.
+
+The repository side has two tiers: **subtree grants** for first-party project code inside the mission's approved scope, and **file pins** for anything outside it. The dependency side is the inventory of build scripts and proc macros that will run, pinned by crate, version, and content hash.
+
+A human confirms it once; afterwards, only change raises a prompt.
+
+## Drift
+**Drift** is build access diverging from the baseline.
+
+Reaching outside the granted subtrees, a new build script, a changed build script, or the same dependency version with different content are all drift, and all interrupt autonomy.
+
+Editing the project is not drift. Files created, renamed, or removed inside a granted subtree are the work the mission authorised.
+
 ## Broker
 A **broker** is a privileged service that performs an authority-bearing action without exposing raw credentials to the actor or task.
 
@@ -247,8 +289,10 @@ At the domain level, the important meaning is:
 Concretely, it must:
 - be separate from build/test/fetch environments
 - include text and code manipulation tooling
-- not include the full project build toolchain
+- not include the project build toolchain
 - keep project build, test, install, and publish work outside workspace editing
+
+Because the agent runs inside the workspace environment, this boundary is enforced by what the runtime root contains rather than by a rule the agent is asked to respect ([D17](decisions.md#d17-workspaceedit-helper-execution-is-the-workspace-environment)).
 
 ## Safe inner loop
 The **safe inner loop** is the set of repeated actions an actor can perform inside an approved mission and lease without asking the human every time.
@@ -324,6 +368,13 @@ Guidance:
 | Snapshot | Immutable input set for build execution |
 | Broker | Service that performs privileged actions safely |
 | Artifact | Stored input or output passed between environments |
+| Runtime root | Read-only tool set a task executes against |
+| Egress profile | Named network reachability level for a task |
+| Session token | Capability binding a running actor to a lease |
+| Admin channel | Human-only interface for missions and approvals |
+| Mission cache | Writable build cache scoped to one mission |
+| Access baseline | Confirmed record of what a build may read and what code it runs |
+| Drift | Build access diverging from the baseline |
 
 ## Summary
 

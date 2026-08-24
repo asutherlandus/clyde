@@ -1,0 +1,18 @@
+[package]
+name = "clyde-forward"
+description = "In-sandbox egress forwarder: bridges a loopback listener to the bound proxy socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+
+
+[lints]
+workspace = true
