@@ -1,0 +1,7 @@
+[package]
+name = "needs-a-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+absent-crate = "1.0.0"

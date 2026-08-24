@@ -82,6 +82,15 @@ pub struct DaemonOptions {
     /// Overrides the backend registry. Used by integration tests to inject a
     /// backend; never set by the shipped binary.
     pub backends: Option<BackendRegistry>,
+    /// Overrides the host capability report.
+    ///
+    /// Used by integration tests so the pipeline can be exercised on a host that
+    /// cannot provide the boundary — a container, or a default Ubuntu 24.04
+    /// install. It does not weaken any check: admission still consults the
+    /// report, and the rules themselves (D22 in particular) are tested directly
+    /// against both values in `clyde-policy`. The shipped binary leaves this
+    /// `None` and gets the real probe.
+    pub host_report: Option<HostReport>,
 }
 
 impl DaemonOptions {
@@ -90,6 +99,7 @@ impl DaemonOptions {
             state_root,
             config_paths: ConfigPaths::discover(),
             backends: None,
+            host_report: None,
         }
     }
 }
@@ -109,11 +119,13 @@ impl Daemon {
         }
         let config = loaded.config;
 
-        let host = probe(&ProbePaths {
-            bwrap: config.sandbox.bwrap.clone(),
-            firecracker: config.sandbox.firecracker.clone(),
-            nix: None,
-            state_dir: Some(paths.root().to_path_buf()),
+        let host = options.host_report.clone().unwrap_or_else(|| {
+            probe(&ProbePaths {
+                bwrap: config.sandbox.bwrap.clone(),
+                firecracker: config.sandbox.firecracker.clone(),
+                nix: None,
+                state_dir: Some(paths.root().to_path_buf()),
+            })
         });
 
         let ca = Arc::new(ClydeCa::load_or_create(&paths.ca())?);
@@ -171,8 +183,16 @@ impl Daemon {
     }
 
     /// The policy layer's view of what this host can provide.
+    ///
+    /// Isolation comes from the *registry* rather than from the raw probe: a
+    /// backend that is registered is one that can run, and a probe that says
+    /// otherwise would refuse work the host can actually do. Cgroup delegation
+    /// still comes from the probe, because no backend can conjure it (D22).
     pub fn host_capabilities(&self) -> clyde_policy::HostCapabilities {
-        self.host.policy_view()
+        clyde_policy::HostCapabilities {
+            strongest_isolation: self.backends.strongest_isolation(),
+            cgroup_delegation: self.host.cgroup_delegation.is_available(),
+        }
     }
 
     /// The configuration in force for a workspace, with its repository layer
@@ -272,6 +292,7 @@ mod tests {
                 user: None,
             },
             backends: Some(BackendRegistry::new()),
+            host_report: None,
         }
     }
 

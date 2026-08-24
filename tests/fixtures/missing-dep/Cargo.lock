@@ -1,0 +1,13 @@
+version = 4
+
+[[package]]
+name = "needs-a-crate"
+version = "0.1.0"
+dependencies = [
+ "absent-crate",
+]
+
+[[package]]
+name = "absent-crate"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"

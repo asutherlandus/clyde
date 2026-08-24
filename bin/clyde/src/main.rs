@@ -13,7 +13,7 @@ mod client;
 mod output;
 mod tui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use clyde_api::admin::methods;
@@ -297,9 +297,16 @@ async fn run(cli: Cli) -> Result<(), ClientError> {
         Command::Deps(command) => deps(&admin_socket, format, command).await,
         Command::Task(command) => task(&admin_socket, &actor_socket, format, command).await,
         Command::Doctor => {
-            let value = Client::new(&admin_socket)
+            // Doctor works without a daemon: bring-up is exactly when the daemon
+            // is not yet running, and a diagnostic that needs the thing it is
+            // diagnosing is no diagnostic at all.
+            let value = match Client::new(&admin_socket)
                 .call(methods::DOCTOR, serde_json::json!({}))
-                .await?;
+                .await
+            {
+                Ok(value) => value,
+                Err(_) => local_doctor(&state_root),
+            };
             output::emit(format, &value, output::doctor);
             Ok(())
         }
@@ -819,6 +826,40 @@ fn refuse_inside_sandbox(command: &str) -> Result<(), ClientError> {
         )));
     }
     Ok(())
+}
+
+/// Probes host prerequisites without a running daemon.
+fn local_doctor(state_root: &Path) -> serde_json::Value {
+    let report = clyde_sandbox::probe(&clyde_sandbox::ProbePaths {
+        bwrap: None,
+        firecracker: None,
+        nix: None,
+        state_dir: Some(state_root.to_path_buf()),
+    });
+    let mut value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "can_run_workspace".to_owned(),
+            serde_json::Value::Bool(report.can_run_workspace()),
+        );
+        object.insert(
+            "can_run_build".to_owned(),
+            serde_json::Value::Bool(report.can_run_build()),
+        );
+        object.insert(
+            "can_run_microvm".to_owned(),
+            serde_json::Value::Bool(report.can_run_microvm()),
+        );
+        object.insert(
+            "broker_reachable".to_owned(),
+            serde_json::Value::Bool(false),
+        );
+        object.insert(
+            "daemon".to_owned(),
+            serde_json::Value::String("not running; this report is a local probe".to_owned()),
+        );
+    }
+    value
 }
 
 fn default_state_root() -> PathBuf {

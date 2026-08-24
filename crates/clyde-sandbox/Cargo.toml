@@ -17,6 +17,11 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[features]
+# A backend with no isolation at all, for integration tests on hosts where
+# unprivileged user namespaces are unavailable. No shipped binary enables it.
+test-backend = []
+
 [dev-dependencies]
 tempfile.workspace = true
 

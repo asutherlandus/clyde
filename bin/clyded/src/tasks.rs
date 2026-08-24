@@ -51,6 +51,15 @@ pub async fn run_task(
     path: RepoPath,
     options: TaskOptions,
 ) -> Result<TaskRun> {
+    // Mission and lease are re-read from the store rather than taken from the
+    // caller's context. A revocation that happened after the context was built
+    // must stop this request, not the next one.
+    let context = &TaskContext {
+        mission: daemon.store.get_mission(&context.mission.id)?,
+        lease: daemon.store.get_lease(&context.lease.id)?,
+        workspace: context.workspace.clone(),
+        config: context.config.clone(),
+    };
     let request = TaskRequest {
         id: ids::new::task_run_id()?,
         lease: context.lease.id.clone(),

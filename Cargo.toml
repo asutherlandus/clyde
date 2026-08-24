@@ -1,5 +1,9 @@
 [workspace]
 resolver = "3"
+# Fixtures are standalone cargo projects used as test inputs. They are excluded
+# so the outer workspace does not try to build them, and so each one behaves as
+# the layout it is meant to demonstrate.
+exclude = ["tests/fixtures"]
 members = [
     "crates/clyde-core",
     "crates/clyde-policy",

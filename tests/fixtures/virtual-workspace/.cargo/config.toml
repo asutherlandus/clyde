@@ -1,0 +1,2 @@
+[build]
+# Present so the fixture asserts that cargo configuration is part of the closure.

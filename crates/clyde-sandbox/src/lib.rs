@@ -25,6 +25,8 @@ pub mod registry;
 pub mod runtime_root;
 pub mod seccomp;
 pub mod spec;
+#[cfg(feature = "test-backend")]
+pub mod test_backend;
 
 pub use backend::{ExitStatus, SandboxBackend, SandboxHandle};
 pub use bubblewrap::BubblewrapBackend;
