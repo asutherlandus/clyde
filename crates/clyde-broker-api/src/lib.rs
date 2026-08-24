@@ -28,7 +28,11 @@ pub enum BrokerRequest {
     /// names, never with credential material.
     Capabilities,
     /// Push an approved commit.
-    GitPush(GitPushRequest),
+    ///
+    /// Boxed so the two variants are close in size: the enum is passed by
+    /// value across the transport and a large inline variant would make the
+    /// capabilities query as expensive to move as a push request.
+    GitPush(Box<GitPushRequest>),
 }
 
 /// A brokered push.

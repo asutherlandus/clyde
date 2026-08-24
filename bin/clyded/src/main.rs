@@ -1,3 +1,2 @@
-//! Clyde control plane daemon
-
+//! `clyded`: the Clyde control plane.
 fn main() {}
