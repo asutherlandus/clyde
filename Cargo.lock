@@ -322,7 +322,8 @@ dependencies = [
  "clyde-broker-api",
  "clyde-core",
  "clyde-git",
- "libc",
+ "clyde-policy",
+ "clyde-store",
  "serde",
  "serde_json",
  "tempfile",
@@ -372,7 +373,7 @@ name = "clyde-forward"
 version = "0.1.0"
 dependencies = [
  "clap",
- "thiserror",
+ "clyde-egress",
  "tokio",
 ]
 

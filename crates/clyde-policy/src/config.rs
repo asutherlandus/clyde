@@ -128,6 +128,12 @@ pub struct BrokerConfig {
     /// Whether the broker may use an `ssh-agent` connection, in addition to a
     /// key file.
     pub allow_ssh_agent: bool,
+    /// A private key file the broker may use.
+    pub ssh_key: Option<PathBuf>,
+    /// Remote name to URL. The broker resolves a remote from here and never
+    /// from the workspace repository's own configuration, which is
+    /// attacker-controlled content in this threat model.
+    pub remotes: BTreeMap<String, String>,
 }
 
 /// A per-task narrowing.
@@ -343,6 +349,8 @@ pub struct SandboxSection {
 pub struct BrokerSection {
     pub socket: Option<PathBuf>,
     pub allow_ssh_agent: Option<bool>,
+    pub ssh_key: Option<PathBuf>,
+    pub remotes: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -535,8 +543,12 @@ fn merge(
     if let Some(broker) = file.broker {
         if source.may_widen() {
             base.broker.socket = broker.socket.or(base.broker.socket);
+            base.broker.ssh_key = broker.ssh_key.or(base.broker.ssh_key);
             if let Some(allow) = broker.allow_ssh_agent {
                 base.broker.allow_ssh_agent = allow;
+            }
+            if let Some(remotes) = broker.remotes {
+                base.broker.remotes = remotes;
             }
         } else {
             reject_not_settable("broker.*", rejections);

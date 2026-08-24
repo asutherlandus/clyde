@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use clyde_git::push::{PushRequest, push};
+use clyde_git::push::{Credential, PushRequest, push};
 use clyde_git::{GitRunner, Identity};
 
 /// Runs git directly, for building the fixture. Deliberately *not* the sanitised
@@ -187,6 +187,7 @@ async fn a_hostile_repository_executes_nothing_during_a_brokered_push() {
             commit: fixture.commit.clone(),
             expected_tree: fixture.tree.clone(),
         },
+        &Credential::None,
     )
     .await
     .expect("the push itself must succeed");
@@ -236,6 +237,7 @@ async fn a_tree_that_does_not_match_the_approval_aborts_before_the_push() {
             commit: fixture.commit.clone(),
             expected_tree: "0".repeat(40),
         },
+        &Credential::None,
     )
     .await
     .expect_err("a tree mismatch must abort");
@@ -271,6 +273,7 @@ async fn the_scratch_repository_is_destroyed_even_on_failure() {
             commit: "a".repeat(40),
             expected_tree: fixture.tree.clone(),
         },
+        &Credential::None,
     )
     .await;
     let leftovers: Vec<_> = std::fs::read_dir(&fixture.scratch)

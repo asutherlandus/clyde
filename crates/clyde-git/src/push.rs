@@ -18,6 +18,72 @@ use std::path::{Path, PathBuf};
 
 use crate::{GitError, GitRunner, Result, validate_branch_refspec};
 
+/// How the broker authenticates to the remote.
+///
+/// The credential is held only in the broker process and reaches git as an
+/// `ssh` command, never on a command line and never in a repository's own
+/// configuration. Its `Debug` shows the kind, not the material.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// An `ssh-agent` connection the developer already has.
+    SshAgent { socket: PathBuf },
+    /// A private key file.
+    SshKey { path: PathBuf },
+    /// No credential. A push will fail, which is the honest outcome.
+    None,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::SshAgent { .. } => "Credential::SshAgent",
+            Self::SshKey { .. } => "Credential::SshKey",
+            Self::None => "Credential::None",
+        })
+    }
+}
+
+impl Credential {
+    /// The kind, for a capability answer. Never the material.
+    pub fn kind(&self) -> Option<&'static str> {
+        match self {
+            Self::SshAgent { .. } => Some("ssh-agent"),
+            Self::SshKey { .. } => Some("ssh-key"),
+            Self::None => None,
+        }
+    }
+
+    pub fn is_present(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// The ssh command git should use.
+    ///
+    /// `IdentitiesOnly` stops ssh from offering every key the agent holds when a
+    /// specific one was named, and `BatchMode` stops it prompting, since there is
+    /// no terminal here to prompt on.
+    fn ssh_command(&self) -> Option<String> {
+        match self {
+            Self::SshAgent { .. } => Some("ssh -o BatchMode=yes".to_owned()),
+            Self::SshKey { path } => Some(format!(
+                "ssh -i {} -o IdentitiesOnly=yes -o BatchMode=yes",
+                path.display()
+            )),
+            Self::None => None,
+        }
+    }
+
+    /// Environment the push invocation needs.
+    fn env(&self) -> Vec<(String, String)> {
+        match self {
+            Self::SshAgent { socket } => {
+                vec![("SSH_AUTH_SOCK".to_owned(), socket.display().to_string())]
+            }
+            Self::SshKey { .. } | Self::None => Vec::new(),
+        }
+    }
+}
+
 /// What a brokered push does, after validation and approval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushRequest {
@@ -46,6 +112,7 @@ pub async fn push(
     runner: &GitRunner,
     scratch_root: &Path,
     request: &PushRequest,
+    credential: &Credential,
 ) -> Result<PushResult> {
     clyde_core::task::validate_git_object_id(&request.commit).map_err(|_| GitError::Invalid {
         kind: "commit id",
@@ -55,7 +122,7 @@ pub async fn push(
     validate_remote_url(&request.remote_url)?;
 
     let scratch = ScratchRepository::create(scratch_root, &request.commit)?;
-    let result = push_from_scratch(runner, scratch.path(), request, &branch).await;
+    let result = push_from_scratch(runner, scratch.path(), request, &branch, credential).await;
     // The scratch repository is destroyed whether or not the push succeeded, so
     // a failed push leaves no partially populated object store behind.
     scratch.destroy();
@@ -67,6 +134,7 @@ async fn push_from_scratch(
     scratch: &Path,
     request: &PushRequest,
     branch: &str,
+    credential: &Credential,
 ) -> Result<PushResult> {
     runner
         .run(
@@ -143,20 +211,25 @@ async fn push_from_scratch(
         )
         .await?;
 
-    let output = runner
-        .run(
-            runner
-                .command([
-                    "push".to_owned(),
-                    "--quiet".to_owned(),
-                    // No force, no delete, no mirror: the refspec is a plain
-                    // fast-forward of one branch.
-                    "target".to_owned(),
-                    format!("{}:refs/heads/{branch}", request.commit),
-                ])
-                .with_git_dir(scratch),
-        )
-        .await?;
+    // The credential enters here and nowhere else: as an ssh command and, for an
+    // agent, a socket path in the environment.
+    let mut invocation = runner
+        .command([
+            "push".to_owned(),
+            "--quiet".to_owned(),
+            // No force, no delete, no mirror: the refspec is a plain
+            // fast-forward of one branch.
+            "target".to_owned(),
+            format!("{}:refs/heads/{branch}", request.commit),
+        ])
+        .with_git_dir(scratch);
+    if let Some(command) = credential.ssh_command() {
+        invocation = invocation.with_ssh_command(command);
+    }
+    for (key, value) in credential.env() {
+        invocation = invocation.with_env(key, value);
+    }
+    let output = runner.run(invocation).await?;
 
     Ok(PushResult {
         commit: request.commit.clone(),

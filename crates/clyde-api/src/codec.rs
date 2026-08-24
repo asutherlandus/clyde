@@ -55,10 +55,15 @@ impl<R: tokio::io::AsyncRead + Unpin> RequestReader<R> {
     }
 
     /// Reads the next request.
+    pub async fn next(&mut self) -> Result<Request, CodecError> {
+        self.next_json().await
+    }
+
+    /// Reads the next message, decoded as `T`.
     ///
     /// Blank lines are skipped rather than treated as errors, since a client
     /// that flushes an empty line is not misbehaving.
-    pub async fn next(&mut self) -> Result<Request, CodecError> {
+    pub async fn next_json<T: serde::de::DeserializeOwned>(&mut self) -> Result<T, CodecError> {
         loop {
             self.line.clear();
             let read = self.inner.read_line(&mut self.line).await?;
@@ -93,14 +98,30 @@ impl<W: AsyncWrite + Unpin> ResponseWriter<W> {
     }
 
     pub async fn send(&mut self, response: &Response) -> Result<(), CodecError> {
-        let mut encoded = serde_json::to_vec(response)
+        self.send_framed(response, response.id.clone()).await
+    }
+
+    /// Writes any serialisable message with the same framing.
+    ///
+    /// Used by the CLI, so the client exercises the same codec an agent does
+    /// rather than a second implementation that could drift from it.
+    pub async fn send_value<T: serde::Serialize>(&mut self, value: &T) -> Result<(), CodecError> {
+        self.send_framed(value, None).await
+    }
+
+    async fn send_framed<T: serde::Serialize>(
+        &mut self,
+        message: &T,
+        id: Option<crate::jsonrpc::Id>,
+    ) -> Result<(), CodecError> {
+        let mut encoded = serde_json::to_vec(message)
             .map_err(|error| CodecError::Malformed(error.to_string()))?;
         if encoded.len() > MAX_MESSAGE_BYTES {
             // A response too large to frame is replaced by an error rather than
             // truncated, because a truncated JSON line is indistinguishable from
             // a protocol fault.
             let replacement = Response::failure(
-                response.id.clone(),
+                id,
                 Error::internal("the response exceeded the message size limit"),
             );
             encoded = serde_json::to_vec(&replacement)

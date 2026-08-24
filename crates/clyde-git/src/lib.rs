@@ -113,7 +113,14 @@ impl Identity {
 /// These travel as environment variables so that git's child processes inherit
 /// them. `-c` arguments would not reach `upload-pack` in the source repository,
 /// which is exactly where the object-transfer hook runs.
-fn sanitising_config() -> Vec<(String, String)> {
+///
+/// `ssh_command` is the one value a caller may influence, and only the broker
+/// does: it is how a credential reaches the transport. It is set through
+/// `core.sshCommand` rather than `GIT_SSH_COMMAND` because repository
+/// configuration could otherwise override the latter, and this override must
+/// win.
+fn sanitising_config(ssh_command: Option<&str>) -> Vec<(String, String)> {
+    let ssh = ssh_command.unwrap_or("ssh");
     let overrides: [(&str, &str); 8] = [
         // No hooks, in this repository or any repository git talks to.
         ("core.hooksPath", "/dev/null"),
@@ -122,7 +129,7 @@ fn sanitising_config() -> Vec<(String, String)> {
         ("uploadpack.packObjectsHook", ""),
         ("uploadpack.allowFilter", "false"),
         // Transport rewrites and custom transport commands.
-        ("core.sshCommand", "ssh"),
+        ("core.sshCommand", ssh),
         ("core.fsmonitor", "false"),
         ("core.askpass", ""),
         // Filters run arbitrary commands on checkout and add.
@@ -150,6 +157,10 @@ pub struct Invocation {
     identity: Option<Identity>,
     /// Extra environment, used for the author and committer dates.
     extra_env: BTreeMap<String, String>,
+    /// The ssh command git should use. Only the broker sets this, and it is how
+    /// a credential reaches the transport without ever appearing on a command
+    /// line or in a repository's own configuration.
+    ssh_command: Option<String>,
 }
 
 impl Invocation {
@@ -161,6 +172,7 @@ impl Invocation {
             index_file: None,
             identity: None,
             extra_env: BTreeMap::new(),
+            ssh_command: None,
         }
     }
 
@@ -186,6 +198,12 @@ impl Invocation {
 
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.extra_env.insert(key.into(), value.into());
+        self
+    }
+
+    /// Sets the ssh command, which is how the broker supplies a credential.
+    pub fn with_ssh_command(mut self, command: impl Into<String>) -> Self {
+        self.ssh_command = Some(command.into());
         self
     }
 
@@ -284,7 +302,7 @@ impl GitRunner {
         // No credential helper may run: brokered operations supply their own
         // credential inside the broker and nowhere else.
         command.env("GIT_CONFIG_PARAMETERS", "");
-        for (key, value) in sanitising_config() {
+        for (key, value) in sanitising_config(invocation.ssh_command.as_deref()) {
             command.env(key, value);
         }
         for (key, value) in &invocation.extra_env {
@@ -513,7 +531,7 @@ mod tests {
 
     #[test]
     fn the_sanitising_configuration_disables_hooks_and_transport_rewrites() {
-        let config = sanitising_config();
+        let config = sanitising_config(None);
         let rendered: BTreeMap<String, String> = config.into_iter().collect();
         let count: usize = rendered
             .get("GIT_CONFIG_COUNT")
