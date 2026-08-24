@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Problem Statement and Threat Model
+# Clyde Next: Problem Statement and Threat Model
 
 ## Purpose
 
@@ -176,15 +176,15 @@ The most important assets are:
 
 ## Trust Boundaries
 
-A secure design must separate at least these trust domains:
+A secure design must separate at least these major parts of the system:
 
 1. **Control plane**: trusted local supervisor enforcing policy
-2. **Agent/edit plane**: code reading, planning, and editing
-3. **Untrusted execution plane**: build, test, codegen, package installation
-4. **Credential plane**: git push, signing, publishing, token issuance
-5. **Artifact plane**: immutable inputs, caches, outputs, and provenance
+2. **Workspace environment**: code reading, planning, editing, and low-authority code manipulation
+3. **Build environment**: build, test, codegen, and package installation
+4. **Broker environment**: git push, signing, publishing, and token issuance
+5. **Artifact layer**: immutable inputs, caches, outputs, and provenance
 
-These domains should communicate through explicit, typed, auditable interfaces rather than shared shells, mounted home directories, or forwarded credential sockets.
+These parts should communicate through explicit, typed, auditable interfaces rather than shared shells, mounted home directories, or forwarded credential sockets.
 
 ## Security Objectives
 
@@ -222,7 +222,7 @@ The goal is meaningful least-privilege isolation with a practical developer expe
 
 A suitable solution should have the following high-level characteristics:
 - **task-based isolation** instead of one long-lived all-powerful dev container
-- **separate trust domains** for editing, execution, and credential use
+- **separate environments** for editing, execution, and privileged external actions
 - **ephemeral sandboxes** for untrusted build and test steps
 - **immutable snapshots** for task inputs and controlled artifact outputs
 - **network denied by default**, with explicit destination-scoped exceptions
@@ -231,4 +231,4 @@ A suitable solution should have the following high-level characteristics:
 - **auditability and provenance** for task execution and artifact movement
 - **strong support for agentic coding** through a policy-aware execution API
 
-In short, Clyde should treat source code execution, dependency resolution, credential use, and publishing as separate security domains connected only by explicit policy-controlled interfaces.
+In short, Clyde should treat source code execution, dependency resolution, credential use, and publishing as separate parts of the system connected only by explicit policy-controlled interfaces.

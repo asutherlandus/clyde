@@ -6,6 +6,8 @@ Clyde is being redesigned as a **least-privilege development system for Rust and
 
 This branch is focused on the **clean-slate architecture and design work** for that next version.
 
+In the simplest terms: **an actor works on a mission in a workspace, asks to run a task, policy decides whether and how it may run, and the task runs in an appropriate environment.**
+
 ## Status
 
 This repository currently contains:
@@ -17,17 +19,20 @@ The design direction assumes:
 - untrusted code may execute during build, test, install, and codegen
 - credentials must be **brokered, not mounted**
 - network should be **denied by default**
-- build, test, sign, and publish must be **separate trust domains**
-- coding agents should operate through **missions, leases, typed tasks, and approvals** rather than ambient shell authority
+- build, test, sign, and publish must be **separate environments with different authority**
+- humans and agents act as **actors** within **missions**
+- work happens through **tasks** evaluated by **policy** and run in controlled **environments**
+- the workspace environment may support low-authority code-manipulation scripts, but project build/test toolchains remain outside that environment
 
 ## Clyde Next document set
 
 Start here:
 
 1. [Problem Statement and Threat Model](docs/problem-statement-threat-model.md)
-2. [Requirements](docs/requirements.md)
-3. [Competitive Alternatives](docs/competitive-alternatives.md)
-4. [High-Level Design](docs/high-level-design.md)
+2. [Terminology](docs/terminology.md)
+3. [Requirements](docs/requirements.md)
+4. [Competitive Alternatives](docs/competitive-alternatives.md)
+5. [High-Level Design](docs/high-level-design.md)
 
 Detailed design:
 
@@ -50,11 +55,13 @@ Clyde Next is intended to be:
 
 Core design ideas:
 
-- **missions** define a bounded goal and autonomy envelope
-- **leases** grant temporary scoped authority to agents and sub-agents
-- **typed tasks** define how code executes under policy
-- **snapshots** separate mutable editing from untrusted execution
-- **brokers** separate authority from code execution
+- **missions** define bounded goals
+- **actors** work within mission limits
+- the **workspace** is mutable and used for authoring
+- **tasks** are the units of work Clyde controls
+- **policy** decides whether and how tasks may run
+- **environments** separate editing, research, build/test execution, and privileged external actions
+- **leases**, **snapshots**, and **brokers** enforce those boundaries
 
 ## Legacy implementation
 

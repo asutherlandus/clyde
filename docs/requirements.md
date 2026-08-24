@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Requirements
+# Clyde Next: Requirements
 
 ## Purpose
 
@@ -32,7 +32,7 @@ The new Clyde should be designed around these principles:
 
 ## System Model
 
-Clyde shall separate the system into the following logical planes.
+Clyde shall separate the system into a trusted control plane and a small number of distinct environments.
 
 ### 1. Control plane
 Trusted local supervisor responsible for:
@@ -44,17 +44,20 @@ Trusted local supervisor responsible for:
 - artifact collection
 - credential-broker coordination
 
-### 2. Agent/edit plane
+### 2. Workspace environment
 Environment used for:
 - reading code
 - editing files
 - searching the repository
 - viewing logs and artifacts
+- running low-authority helper scripts for ad hoc code manipulation
 - requesting task execution
 
-This plane must not directly expose publish, signing, or raw credential capabilities.
+This environment must not directly expose publish, signing, raw credential capabilities, or the full project build/test toolchain.
 
-### 3. Untrusted execution plane
+Repo-local agent guidance such as `AGENTS.md` should be readable from this environment and should be available as an input to agent behavior, mission defaults, and workspace-edit guidance.
+
+### 3. Build environment
 Sandboxed environment used for:
 - dependency installation and fetch
 - Rust compilation
@@ -65,9 +68,9 @@ Sandboxed environment used for:
 - browser automation
 - project-defined code generation
 
-This plane must be assumed hostile.
+This environment must be assumed hostile.
 
-### 4. Credential plane
+### 4. Broker environment
 Brokered capability layer used for:
 - git fetch and push
 - SSH-backed operations
@@ -75,7 +78,7 @@ Brokered capability layer used for:
 - cloud/API token issuance
 - registry publish operations
 
-### 5. Artifact plane
+### 5. Artifact layer
 Storage and transfer layer for:
 - source snapshots
 - dependency bundles
@@ -88,10 +91,24 @@ Storage and transfer layer for:
 
 ### A. Task model
 
+#### A0. Repo-local agent guidance
+Clyde should support a repo-local `AGENTS.md` file as a source of development and coding guidance for humans and coding agents.
+
+`AGENTS.md` may define guidance such as:
+- expected development workflow
+- flake-based tooling expectations
+- coding style and review standards
+- security-sensitive implementation constraints
+- testing expectations
+
+`AGENTS.md` should guide how work is performed, but it should not silently override core security policy or widen authority.
+
+
 #### A1. Typed task execution
 Clyde shall expose common workflows as typed tasks rather than relying exclusively on unrestricted shell execution.
 
 Examples include:
+- `workspace.edit`
 - `rust.resolve-deps`
 - `rust.check`
 - `rust.build`
@@ -116,11 +133,27 @@ Each typed task shall have a predefined policy covering:
 
 #### A2. Arbitrary command support
 Clyde may support arbitrary commands, but it shall classify them into explicit risk classes such as:
+- low-authority workspace utility commands
 - trusted maintenance commands
 - untrusted project commands
 - privileged brokered operations
 
 Arbitrary commands shall not bypass policy enforcement.
+
+#### A3. Helper-driven workspace editing
+Clyde shall support a low-authority helper-execution mode as part of `workspace.edit` for agent-authored ephemeral scripts that manipulate the live workspace.
+
+This mode shall be treated as distinct from build/test/fetch execution and shall enforce all of the following:
+- live workspace access limited to the lease-scoped repository paths
+- writable outputs limited to allowed repo paths and isolated scratch space
+- no raw credentials
+- no host home directory, unrelated projects, browser state, or container runtime sockets
+- no external network by default
+- a separate image/runtime from build/test/fetch task environments
+- tooling for text and code manipulation
+- no full project build toolchain available inside the edit-helper runtime
+
+If a command requires the project build toolchain, executes repo-defined build/test/install code, or needs broader authority, it shall run as a different typed task under the appropriate policy rather than as workspace editing.
 
 ### B. Filesystem isolation
 
@@ -257,6 +290,16 @@ Clyde should support generation of provenance or attestation metadata for build 
 ## Runtime Requirements
 
 ### I. Sandbox runtime
+
+#### I0. Separate low-authority edit runtime
+Clyde shall provide a separate runtime for helper-driven `workspace.edit` and similar workspace-environment editing support.
+
+This runtime shall be a strict design requirement, not an implementation preference. It shall:
+- be separate from build/test/fetch runtimes
+- provide tooling for text and code manipulation
+- omit the full project build toolchain
+- deny credentials and external network by default
+- mount only lease-scoped live workspace paths plus isolated scratch space
 
 #### I1. Strong isolation for untrusted execution
 Clyde shall support a stronger isolation boundary than a general shared development shell for untrusted tasks. Ephemeral microVMs or similarly hardened sandboxes are preferred for higher-risk execution.

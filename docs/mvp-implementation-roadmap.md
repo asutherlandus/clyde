@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: MVP Implementation Roadmap
+# Clyde Next: MVP Implementation Roadmap
 
 ## Purpose
 
@@ -39,12 +39,12 @@ A successful MVP should prove all of the following:
 
 ### Primary workflow
 The MVP should optimize for this workflow:
-- Rust backend project
-- optional frontend build support
+- Rust project setup
+- `AGENTS.md` repo guidance/config support
 - one human
 - one primary coding agent
 - mission creation and one active lease
-- repeated `rust.check` and `rust.test.unit`
+- repeated `workspace.edit`, `rust.check`, and `rust.test.unit`
 - separate dependency resolution
 - brokered `git.push`
 - visible approval prompts
@@ -74,6 +74,9 @@ Create the shared data model, task taxonomy, and policy skeleton before building
 - audit event schema
 - component boundaries and interface definitions
 - initial repo policy format
+- supported Rust project setup and assumptions
+- `AGENTS.md` discovery and interpretation rules
+- `workspace.edit` semantics, including scripted helper-driven edits in the workspace environment
 
 ### MVP task set for this phase
 - `workspace.read`
@@ -87,6 +90,8 @@ Create the shared data model, task taxonomy, and policy skeleton before building
 ### Exit criteria
 - all major entities and state transitions documented
 - basic policy resolution rules defined
+- supported Rust project setup is defined
+- `AGENTS.md` behavior is defined
 - implementation interfaces agreed
 
 ## Phase 1: Mission, lease, and approval core
@@ -128,6 +133,7 @@ This phase establishes the human-to-agent delegation boundary and prevents the s
 Make autonomous edit / check / test loops practical and secure.
 
 ### Deliverables
+- low-authority workspace-edit execution support for helper-driven edits
 - snapshot manager
 - task execution pipeline
 - sandbox manager with initial isolated runtime backend
@@ -138,7 +144,8 @@ Make autonomous edit / check / test loops practical and secure.
 
 ### User-visible outcome
 An agent can:
-- edit files
+- edit files directly
+- use scripted or tool-assisted `workspace.edit` for one-off codemods and helper scripts
 - run `rust.check`
 - run `rust.test.unit`
 - inspect failure logs
@@ -148,16 +155,20 @@ A human can:
 - watch task history
 - review which policy ran
 - inspect produced logs/artifacts
+- distinguish helper-driven workspace editing from build/test execution
 
 ### Security value
-This phase is where Clyde first replaces the unsafe "agent runs code in its own environment" model.
+This phase is where Clyde first replaces the unsafe "agent runs code in its own environment" model while still preserving a low-friction place for one-off agent-authored edit helpers.
 
 ### Implementation notes
 - a hardened container backend may be acceptable for earliest bring-up
 - the abstraction should still preserve room for microVM backends
 - snapshot vs live workspace separation should be preserved even if implementation is simple
+- helper-driven `workspace.edit` must use a separate image/runtime from build/test/fetch tasks
+- that edit-execution support must include text/code-manipulation tooling but not the full project build toolchain
 
 ### Exit criteria
+- helper-driven `workspace.edit` uses a separate low-authority execution mode with no full project build toolchain
 - build/test tasks use immutable snapshots
 - no-network default is enforced for compile/test
 - no credentials are visible inside build/test runtimes
@@ -217,7 +228,7 @@ This phase removes one of the biggest remaining ambient-power risks in typical a
 - `git.push` works through broker only
 - push prompts show branch, remote, commit, and actor clearly
 
-## Phase 5: Frontend/full-stack extension
+## Phase 5: Post-MVP frontend/full-stack extension
 
 ### Goal
 Extend the model beyond Rust-only backend workflows.
@@ -251,7 +262,7 @@ Upgrade untrusted execution from acceptable isolation to preferred isolation.
 ### Deliverables
 - microVM backend or equivalent strong sandbox backend
 - runtime selection in task policy
-- parity for `rust.check`, `rust.test.unit`, `rust.resolve-deps`, `web.build`
+- parity for `rust.check`, `rust.test.unit`, and `rust.resolve-deps`
 - performance tuning for snapshot handoff and task startup
 
 ### User-visible outcome
@@ -318,10 +329,12 @@ If implementation time is limited, the true MVP should stop after Phase 4.
 That means the first end-to-end supported slice is:
 - one human developer
 - one agent
+- Rust project setup
+- `AGENTS.md` repo guidance/config support
 - mission creation
 - one primary lease
-- scoped workspace edits
-- immutable snapshots
+- scoped workspace edits, including helper-driven edits
+- immutable snapshots for build/test tasks
 - `rust.check`
 - `rust.test.unit`
 - `rust.resolve-deps`
@@ -353,6 +366,7 @@ Because push is a frequent developer workflow and a common privilege exposure pa
 - approval prompts are linked to mission and lease ids
 
 ## Phase 2 acceptance
+- helper-driven `workspace.edit` uses a separate execution mode with text/code-manipulation tooling and no full project build toolchain
 - `rust.check` and `rust.test.unit` run from immutable snapshots
 - agent can iterate autonomously inside lease
 - tasks have visible logs and results
@@ -370,6 +384,7 @@ Because push is a frequent developer workflow and a common privilege exposure pa
 ## Phase 5 acceptance
 - frontend dependency fetch/build separation exists
 - at least one synthetic integration/browser path works
+- this phase remains outside the MVP boundary
 
 ## Engineering Workstreams
 
@@ -387,13 +402,13 @@ Implementation can proceed in parallel across these workstreams.
 - approval UX
 - mission/task summary views
 
-### Workstream C: Execution plane
+### Workstream C: Build environment
 - snapshot manager
 - sandbox manager
 - runtime backend integration
 - log streaming
 
-### Workstream D: Broker plane
+### Workstream D: Broker environment
 - broker gateway
 - git push broker
 - approval linkage
@@ -447,6 +462,7 @@ Mitigation:
 ### Risk 3: escape hatch becomes the default
 Mitigation:
 - keep `shell.untrusted` visibly second-class
+- make helper-driven `workspace.edit` the first-class path for workspace-environment ad hoc scripting
 - prioritize adding first-class task types for common workflows
 - log and review escape-hatch usage
 
@@ -462,7 +478,7 @@ Mitigation:
 Mission + lease creation, scoped edits, and review UI.
 
 ### Milestone 2
-Snapshot-based `rust.check` and `rust.test.unit` loop.
+Low-authority helper-driven `workspace.edit` plus snapshot-based `rust.check` and `rust.test.unit` loop.
 
 ### Milestone 3
 `rust.resolve-deps` with approval-gated registry-only network.
@@ -471,7 +487,7 @@ Snapshot-based `rust.check` and `rust.test.unit` loop.
 Brokered `git.push`.
 
 ### Milestone 5
-Basic frontend support and synthetic integration test path.
+Post-MVP frontend support and synthetic integration test path.
 
 ## Summary
 

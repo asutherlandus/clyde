@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: High-Level Design
+# Clyde Next: High-Level Design
 
 ## Purpose
 
@@ -10,23 +10,28 @@ This document describes a high-level design for a clean-sheet Clyde, hereafter *
 - agentic coding workflows
 - the interaction model between the human developer and coding agents inside a least-privilege system
 
-It builds on the threat model in [problem-statement-threat-model.md](problem-statement-threat-model.md) and the requirements in [requirements.md](requirements.md).
+It builds on the threat model in [problem-statement-threat-model.md](problem-statement-threat-model.md), the terminology in [terminology.md](terminology.md), and the requirements in [requirements.md](requirements.md).
 
 ## Design Thesis
 
+Using the terminology defined in [terminology.md](terminology.md), Clyde Next can be described simply:
+
+> An **actor** works on a **mission** in a **workspace**, asks to run a **task**, **policy** decides whether and how it may run, and the task runs in an appropriate **environment**.
+
 Clyde Next should not be a single development container with a coding agent inside it.
 
-Instead, it should be a **local or self-hosted development control plane** that coordinates multiple isolated environments with different privileges:
-- a mutable editing environment for humans and agents
-- ephemeral untrusted execution sandboxes for build and test steps
-- a separate credential and publish plane
+Instead, it should be a **local or self-hosted development control plane** that coordinates multiple environments with different authority:
+- a **workspace environment** for humans and agents to edit and prepare changes
+- a **research environment** for web search, documentation reading, and research artifacts
+- a **build environment** for fetch, build, test, and other project execution
+- a **broker environment** for push, sign, publish, and other privileged external actions
 - a controlled artifact and provenance layer between them
 
-The primary design goal is to preserve the usefulness of agentic coding while ensuring that code execution never automatically inherits access to credentials, the full host filesystem, or unrestricted network access.
+The primary design goal is to preserve the usefulness of agentic coding while ensuring that project execution never automatically inherits access to credentials, the full host filesystem, or unrestricted network access.
 
 ## Architectural Overview
 
-At a high level, Clyde Next consists of five major planes.
+At a high level, Clyde Next consists of a trusted control plane coordinating a small number of environments.
 
 ```text
 +--------------------------------------------------------------+
@@ -36,11 +41,12 @@ At a high level, Clyde Next consists of five major planes.
                                |
                                v
 +--------------------------------------------------------------+
-|                    Agent / Edit Plane                         |
+|                  Workspace Environment                        |
 |  planner, coder, reviewer, repo editor, log/artifact viewer   |
+|  low-authority code-manipulation support                       |
 |  - mutable workspace                                           |
-|  - no raw credentials                                           |
-|  - no direct untrusted execution                               |
+|  - no raw credentials                                          |
+|  - no direct project build/test execution                      |
 +------------------------------+-------------------------------+
                                |
                                v
@@ -53,9 +59,9 @@ At a high level, Clyde Next consists of five major planes.
             |                      |                   |
             v                      v                   v
 +---------------------+  +---------------------+  +--------------------+
-| Untrusted Execution |  | Credential Plane    |  | Artifact Plane     |
+| Build Environment   |  | Broker Environment  |  | Artifact Layer     |
 | build/test/fetch    |  | git/ssh/sign/push   |  | snapshots/logs/    |
-| ephemeral sandboxes |  | brokered operations |  | outputs/provenance |
+| isolated execution  |  | brokered operations |  | outputs/provenance |
 +---------------------+  +---------------------+  +--------------------+
 ```
 
@@ -63,14 +69,14 @@ At a high level, Clyde Next consists of five major planes.
 
 The most important architectural decision is this:
 
-> **The agent does not execute project code directly. The agent asks Clyde to run typed tasks under policy.**
+> **The actor does not execute project build/test code directly from the workspace. The actor asks Clyde to run tasks under policy in the appropriate environment.**
 
-That one decision drives most of the system design.
+That decision drives most of the system design.
 
 It means:
-- the coding agent remains productive
+- the coding agent remains productive, including for one-off codemods and helper scripts in the workspace environment
 - the system can preserve a good conversational coding workflow
-- untrusted code runs in controlled sandboxes
+- untrusted project execution still runs in controlled build environments
 - capabilities can be reviewed, approved, denied, and audited
 - the human developer remains in control of privilege escalation
 
@@ -106,7 +112,7 @@ Agentic development should be supported through constrained autonomy rather than
 A human should be able to delegate a bounded mission such as:
 - implement feature X in `backend/auth`
 - update tests in `backend/tests/auth`
-- run `rust.check` and `rust.test.unit`
+- allow `workspace.edit`, `rust.check`, and `rust.test.unit`
 - do not use network or credentials
 - stop and ask if dependency resolution or broader access is needed
 
@@ -132,6 +138,7 @@ scope:
   - backend/auth
   - backend/tests/auth
 allowed_tasks:
+  - workspace.edit
   - rust.check
   - rust.test.unit
 network: none
@@ -217,14 +224,22 @@ The developer workspace is the place where humans and agents collaborate on sour
 - read/write access to the checked-out repository
 - no direct mount of signing keys into execution environments
 - separate from untrusted build/test environments
+- paired with separate low-authority edit-execution support for ad hoc code-manipulation scripts
 - can be local-first, with optional remote/self-hosted variants later
 
 ### Design intent
 The workspace is where code is authored and reviewed. It is **not** where untrusted project execution should happen by default.
 
-## 2. Agent / Edit Plane
+Clyde should still support agent-authored one-off scripts for editing work, but only as a mode of `workspace.edit` with these strict properties:
+- separate image/runtime from build/test/fetch sandboxes
+- tooling for text and code manipulation
+- no full project build toolchain available
+- no raw credentials
+- no direct publish/sign authority
 
-The agent plane provides the AI coding experience.
+## 2. Workspace Environment
+
+The workspace environment provides the AI coding experience.
 
 ### Agent roles
 Clyde Next should model the agent as a set of logical capabilities rather than a single omnipotent shell user.
@@ -247,10 +262,14 @@ Can:
 - generate patches
 - refactor code
 - create tests and configuration changes
+- use low-authority helper execution for codemods, search/replace, structured rewrites, and similar editing work
 
 Cannot:
 - bypass task policy
 - directly invoke arbitrary privileged execution
+- use the full project build/test toolchain
+- execute repo-defined build/test/install workflows as if it were a dev container
+- access credentials, publish authority, or unrestricted network
 
 #### Executor
 Can:
@@ -295,7 +314,7 @@ The control plane is the trusted brain of Clyde Next.
 - record audit events
 
 ### Important property
-The control plane is the only component allowed to connect the trust domains. Agents and build sandboxes do not connect to each other arbitrarily.
+The control plane is the only component allowed to connect the major parts of the system. Actors and build environments do not connect to each other arbitrarily.
 
 ## 4. Policy Engine
 
@@ -355,9 +374,9 @@ Without snapshots, a build sandbox and an editing agent are fighting over the sa
 ### Result
 The agent edits the live workspace. The execution task runs against a sealed snapshot.
 
-## 6. Untrusted Execution Plane
+## 6. Build Environment
 
-This plane runs all code that should be treated as hostile.
+This environment runs all code that should be treated as hostile.
 
 ### Includes
 - `cargo check`, `cargo build`, `cargo test`
@@ -396,9 +415,9 @@ For high-risk tasks such as:
 - network denied by default
 - destroyed after task completion unless explicitly retained for debugging
 
-## 7. Credential Plane
+## 7. Broker Environment
 
-The credential plane provides capability without direct credential exposure.
+The broker environment provides capability without direct credential exposure.
 
 ### Supported capability types
 - git fetch
@@ -416,14 +435,14 @@ Instead, they request an operation such as:
 - sign manifest M
 - publish artifact A to registry R
 
-The credential plane performs the action if policy and approval allow it.
+The broker environment performs the action if policy and approval allow it.
 
 ### Design consequence
 This cleanly separates **code execution** from **authority**.
 
-## 8. Artifact Plane
+## 8. Artifact Layer
 
-The artifact plane stores and moves outputs across trust boundaries.
+The artifact layer stores and moves outputs across trust boundaries.
 
 ### Stores
 - source snapshots
@@ -612,13 +631,14 @@ This can be implemented in terminal UI, editor extension, or web UI later. The k
 1. Human asks agent to implement a feature.
 2. Agent reads code and proposes changes.
 3. Agent edits files.
-4. Agent requests `rust.check` and `web.build`.
-5. Clyde snapshots inputs and runs tasks in isolated sandboxes.
-6. Results return to task pane.
-7. Agent fixes issues and reruns.
-8. Human reviews final diff.
+4. Agent optionally uses helper-driven `workspace.edit` for a one-off codemod or structured rewrite.
+5. Agent requests `rust.check`.
+6. Clyde snapshots inputs and runs tasks in isolated sandboxes.
+7. Results return to task pane.
+8. Agent fixes issues and reruns.
+9. Human reviews final diff.
 
-No special approvals are needed because tasks used default least-privilege profiles.
+No special approvals are needed because the edit helper and typed tasks used default least-privilege profiles.
 
 ### Flow B: dependency resolution needed
 1. Agent tries `rust.check`.
@@ -703,6 +723,7 @@ Clyde should encourage agent behavior patterns that align with least privilege.
 
 ### Good default behaviors
 - prefer read/plan before edit
+- prefer helper-driven `workspace.edit` for ad hoc code-manipulation scripts
 - prefer narrow task scopes
 - prefer subtree snapshots over whole-repo runs
 - prefer no-network tasks
@@ -729,10 +750,11 @@ Clyde Next should define human-visible capability levels.
 - no execution
 
 ### Level 1: safe execution
-- trusted tools only
-- no project code execution
+- trusted tools and low-authority edit utility scripts only
+- no project build/test/install code execution
 - no network
 - no credentials
+- no full project build toolchain in edit-helper execution
 
 ### Level 2: untrusted project execution
 - build/test/codegen in isolated sandboxes
@@ -757,9 +779,9 @@ This model helps both humans and agents reason about what is happening.
 
 ## Safe defaults for approvals
 The system should auto-approve low-risk repeated actions only when they remain within a tightly defined profile, such as:
+- `workspace.edit` for lease-scoped code-manipulation scripts
 - `rust.check` on current repo subtree
 - `rust.test.unit` with no network
-- `web.build` with no network
 
 It should not silently auto-approve:
 - broader network scopes
@@ -777,6 +799,9 @@ clyde workspace open
 # Ask default agent to implement a change
 clyde agent ask "Add rate limiting to the auth endpoint"
 
+# Run helper-driven workspace editing
+clyde workspace edit --path backend/auth -- python /tmp/codemod.py
+
 # Run a standard typed task
 clyde run rust.check --path backend/
 
@@ -791,6 +816,7 @@ clyde publish push --branch feature/rate-limits
 ```text
 read_code(paths=["backend/src/auth"])
 edit_files(patch=...)
+edit_files(mode="scripted", path="backend/auth", command="python /tmp/codemod.py")
 run_task(type="rust.check", path="backend/")
 get_task_logs(task_id="...")
 request_capability(
@@ -809,22 +835,24 @@ These interfaces make the agent productive without collapsing the trust model.
 ## Rust path
 The standard Rust loop should be:
 1. edit in workspace
-2. separate dependency resolution if needed
-3. run `rust.check` in networkless sandbox
-4. run unit tests in separate sandbox
-5. run integration tests in synthetic network sandbox
-6. package in separate sandbox
-7. sign/push/publish via brokered flow
+2. optionally use helper-driven `workspace.edit` for one-off codemods or batch edits
+3. separate dependency resolution if needed
+4. run `rust.check` in networkless sandbox
+5. run unit tests in separate sandbox
+6. run integration tests in synthetic network sandbox
+7. package in separate sandbox
+8. sign/push/publish via brokered flow
 
 ## Full-stack path
 The standard full-stack loop should be:
 1. edit backend/frontend/shared code
-2. run dependency fetch separately for Rust and JS ecosystems
-3. run backend compile/test in networkless sandbox
-4. run frontend build in networkless sandbox
-5. run integration stack in synthetic network environment
-6. run browser tests with isolated browser profile and synthetic identity
-7. publish via brokered flow
+2. optionally use helper-driven `workspace.edit` for one-off codemods or config rewrites
+3. run dependency fetch separately for Rust and JS ecosystems
+4. run backend compile/test in networkless sandbox
+5. run frontend build in networkless sandbox
+6. run integration stack in synthetic network environment
+7. run browser tests with isolated browser profile and synthetic identity
+8. publish via brokered flow
 
 ## Why this high-level design is different
 
@@ -844,9 +872,9 @@ For an initial version, Clyde Next should focus on a narrow but powerful workflo
 ### Must-have first slice
 - one human developer
 - one primary coding agent
-- mutable workspace + typed task runner
-- snapshot-based task inputs
-- isolated execution for `rust.check`, `rust.test.unit`, `node.resolve-deps`, `web.build`
+- mutable workspace + low-authority scripted editing + typed task runner
+- snapshot-based task inputs for build/test/fetch tasks
+- isolated execution for `rust.check` and `rust.test.unit`
 - no raw SSH/GPG mounting
 - brokered git push
 - approval UX for network and publish actions

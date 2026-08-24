@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Technology and Library Choices
+# Clyde Next: Technology and Library Choices
 
 ## Purpose
 
@@ -7,6 +7,7 @@ This document proposes concrete technology and library choices for implementing 
 It turns the architecture and security model into an opinionated implementation stack for an MVP, while also identifying where the design should evolve later as stronger isolation, broader platform coverage, and release-management features are added.
 
 This document builds on:
+- [terminology.md](terminology.md)
 - [component-architecture.md](component-architecture.md)
 - [mvp-implementation-roadmap.md](mvp-implementation-roadmap.md)
 - [task-policy-matrix.md](task-policy-matrix.md)
@@ -31,6 +32,12 @@ Secondary goals:
 
 ## High-Level Recommended Stack
 
+Using the terminology from [terminology.md](terminology.md), this document is mostly about how Clyde implements:
+- the **control plane** that evaluates policy and coordinates work
+- the **workspace environment** for low-authority editing support
+- the **build environment** for project execution
+- the **broker environment** for privileged external actions
+
 | Subsystem | Recommended MVP choice | Later evolution |
 |---|---|---|
 | Control plane daemon | **Rust** | Rust remains primary |
@@ -40,6 +47,7 @@ Secondary goals:
 | Mission / lease / audit metadata store | **SQLite** | SQLite first, optional Postgres later |
 | Snapshot storage | **content-addressed filesystem store + tar/zstd bundles** | add overlayfs/reflink optimizations later |
 | Sandbox backend (MVP) | **rootless Podman or rootless Docker-compatible OCI runtime** | add Firecracker / Kata / gVisor class later |
+| Workspace-environment image | **pinned OCI image dedicated to helper-driven `workspace.edit`** | keep separate from build/fetch/browser images |
 | Task process orchestration | **Tokio-based async task supervisor** | same foundation |
 | Artifact store | **local filesystem blob store + SQLite metadata** | optional S3/OCI/CAS later |
 | Structured logs | **JSON logs + tracing crate** | OpenTelemetry exporter later |
@@ -165,7 +173,7 @@ Why:
 
 ## MVP choice
 Use a hybrid model:
-- **built-in typed task policies in Rust code**
+- **built-in task policies in Rust code**
 - **repo/user/org config in TOML**
 
 ### Example split
@@ -185,7 +193,7 @@ Configured in TOML:
 ## Why this hybrid
 A fully dynamic policy engine is not needed for MVP and would add complexity early.
 
-The built-in typed policy layer guarantees strong semantics for core tasks. TOML overlays allow project and user customization without letting repos redefine the security meaning of tasks.
+The built-in policy layer guarantees strong semantics for core tasks. TOML overlays allow project and user customization without letting repos redefine the security meaning of tasks.
 
 ## Why TOML
 TOML fits well because:
@@ -293,11 +301,10 @@ Podman is preferred because:
 - integrates well with cgroups and namespace isolation on Linux
 
 ## What Podman is good enough for in MVP
+- helper-driven `workspace.edit`
 - `rust.check`
 - `rust.test.unit`
 - `rust.resolve-deps`
-- `node.resolve-deps`
-- `web.build`
 - synthetic test service containers
 
 ## Important caveat
@@ -320,6 +327,7 @@ Add a stronger backend class for T2/T3 tasks:
 Use a small number of pinned OCI images for task families.
 
 ### Suggested image families
+- `clyde-edit-utility-base`
 - `clyde-rust-base`
 - `clyde-node-base`
 - `clyde-browser-base`
@@ -334,9 +342,28 @@ Each should be:
 ## Why
 This reduces runtime drift and lets task policy choose a known base.
 
+## Strict requirement for the workspace environment image
+`clyde-edit-utility-base` must be a separate image/runtime from build/test/fetch images.
+This is a hard architectural requirement, not a nice-to-have.
+
+It should include tooling for text and code manipulation such as:
+- shell utilities
+- search/filter tools
+- structured text/code transformation helpers
+- interpreters suitable for one-off codemods
+
+It must not include the full project build toolchain.
+In particular, the workspace environment should not become a disguised dev container for:
+- project compilation or test toolchains
+- package-manager install/fetch workflows
+- browser/e2e stacks
+- signing/publishing tools
+- container runtime access
+
 ## Not recommended
 - one giant mutable dev image for everything
 - on-the-fly package installation during offline compile/test tasks
+- reusing build/test images as the workspace-environment image
 
 ## Artifact Store Choice
 
@@ -438,7 +465,7 @@ For MVP, the broker may wrap:
 - later Sigstore/Cosign integration for artifact signing
 
 The key design rule is more important than the exact tool:
-- the signer stays in the broker plane
+- the signer stays in the broker environment
 - signing acts on explicit inputs
 - untrusted code never gets key material
 
@@ -580,7 +607,7 @@ For clarity, the recommended MVP implementation stack is:
 - **Hashing:** BLAKE3 locally, SHA-256 where external compatibility matters
 - **Logging:** tracing + JSON logs
 - **Sandbox backend:** rootless Podman
-- **Runtime images:** pinned OCI images by task family
+- **Runtime images:** pinned OCI images by environment and task type, including a separate helper-driven `workspace.edit` image
 - **Browser runner:** Playwright in isolated sandbox
 - **Credential broker:** separate local Rust daemon over Unix socket
 - **Git broker implementation:** git CLI in broker

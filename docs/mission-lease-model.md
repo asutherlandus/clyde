@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Mission and Capability Lease Model
+# Clyde Next: Mission and Capability Lease Model
 
 ## Purpose
 
@@ -8,25 +8,30 @@ It describes how Clyde can remain the sole policy and authority interface while 
 
 This document builds on:
 - [problem-statement-threat-model.md](problem-statement-threat-model.md)
+- [terminology.md](terminology.md)
 - [requirements.md](requirements.md)
 - [high-level-design.md](high-level-design.md)
 
 ## Summary
 
+Using the terminology from [terminology.md](terminology.md), this document focuses on one part of the core Clyde model:
+
+> An **actor** works on a **mission** in a **workspace**, asks to run a **task**, **policy** decides whether and how it may run, and the task runs in an appropriate **environment**.
+
 The mission model answers the question:
 
-> How can an agent iterate autonomously without bypassing Clyde?
+> How can an actor work autonomously without bypassing Clyde?
 
 The answer is:
 - a human or policy creates a **mission**
 - Clyde turns that mission into one or more **capability leases**
-- agents operate only within active leases
+- actors operate only within active leases
 - sub-agents receive **derived leases** that are equal to or narrower than the parent lease
 - boundary crossings require escalation, renewal, or a new mission
 
 In short:
 
-> A mission defines the goal and operating envelope. A capability lease is the time-bounded grant that allows an actor to work inside that envelope.
+> A **mission** defines the bounded goal and envelope. A **lease** is the time-bounded grant that allows a specific actor to work inside that envelope.
 
 ## Design Goals
 
@@ -49,7 +54,7 @@ A mission captures:
 - the objective to be achieved
 - the actor or actors allowed to work on it
 - the repository and artifact scope
-- the task families allowed
+- the tasks allowed
 - the resource and time budget
 - the escalation rules
 - the approval conditions
@@ -168,6 +173,7 @@ scope:
     - backend/auth
     - backend/tests/auth
 allowed_tasks:
+  - workspace.edit
   - rust.check
   - rust.test.unit
   - rust.test.integration.synthetic
@@ -234,6 +240,7 @@ repo_scope:
   - backend/auth
   - backend/tests/auth
 task_scope:
+  - workspace.edit
   - rust.check
   - rust.test.unit
   - rust.test.integration.synthetic
@@ -443,6 +450,7 @@ Budgets help:
 ## What should be auto-approved within a lease
 Typical examples:
 - edit allowed files
+- use helper-driven `workspace.edit` for lease-scoped code-manipulation scripts
 - run `rust.check`
 - run `rust.test.unit`
 - rerun failed unit tests
@@ -555,7 +563,7 @@ The agent should not need to reason about raw credentials or sandbox internals.
 
 ### Clyde proposes mission
 - scope: `backend/auth`, `backend/tests/auth`
-- tasks: `rust.check`, `rust.test.unit`, `rust.test.integration.synthetic`
+- tasks: `workspace.edit`, `rust.check`, `rust.test.unit`, `rust.test.integration.synthetic`
 - network: none
 - credentials: none
 - duration: 45m
@@ -578,7 +586,7 @@ Clyde issues primary lease.
 create_mission(
   objective="Implement refresh-token rotation",
   scope=["backend/auth", "backend/tests/auth"],
-  preferred_tasks=["rust.check", "rust.test.unit"],
+  preferred_tasks=["workspace.edit", "rust.check", "rust.test.unit"],
   duration="45m"
 )
 ```

@@ -7,34 +7,38 @@ Clyde Next is intended to be a **least-privilege development system for Rust and
 The design assumes:
 - untrusted code may execute during dependency install, build, test, and code generation
 - credentials must be **brokered, not mounted**
-- build, test, sign, and publish must be **separate trust domains**
-- humans and agents should work through **missions, leases, typed tasks, and approvals**
+- build, test, sign, and publish must be **separate environments with different authority**
+- humans and agents act as **actors** within **missions**
+- work happens through **tasks** evaluated by **policy** and run in controlled **environments**
+- the workspace environment may support low-authority code-manipulation scripts, but not the full project build/test toolchain
 
 ## Recommended reading order
 
 ### 1. Foundations
 
 1. [Problem Statement and Threat Model](problem-statement-threat-model.md)
-2. [Requirements](requirements.md)
-3. [Competitive Alternatives](competitive-alternatives.md)
-4. [High-Level Design](high-level-design.md)
+2. [Terminology](terminology.md)
+3. [Requirements](requirements.md)
+4. [Competitive Alternatives](competitive-alternatives.md)
+5. [High-Level Design](high-level-design.md)
 
 ### 2. Core execution and interaction model
 
-5. [Mission and Capability Lease Model](mission-lease-model.md)
-6. [Task Policy Matrix](task-policy-matrix.md)
-7. [Sequence Flows and Interaction Scenarios](sequence-flows.md)
+6. [Mission and Capability Lease Model](mission-lease-model.md)
+7. [Task Policy Matrix](task-policy-matrix.md)
+8. [Sequence Flows and Interaction Scenarios](sequence-flows.md)
 
 ### 3. Implementation planning
 
-8. [Component Architecture](component-architecture.md)
-9. [Technology and Library Choices](technology-choices.md)
-10. [MVP Implementation Roadmap](mvp-implementation-roadmap.md)
+9. [Component Architecture](component-architecture.md)
+10. [Technology and Library Choices](technology-choices.md)
+11. [MVP Implementation Roadmap](mvp-implementation-roadmap.md)
 
 ## Document map
 
 ### Strategy and framing
 - [Problem Statement and Threat Model](problem-statement-threat-model.md)
+- [Terminology](terminology.md)
 - [Competitive Alternatives](competitive-alternatives.md)
 
 ### Product and system design
@@ -51,13 +55,20 @@ The design assumes:
 
 ## Short summary
 
-The Clyde Next design is centered on these ideas:
-- **missions** define bounded goals and autonomy envelopes
-- **leases** grant temporary scoped authority to agents and sub-agents
-- **typed tasks** define how untrusted code executes under policy
-- **snapshots** separate mutable editing from isolated execution
-- **brokers** separate credentials and publish authority from build/test environments
-- **approvals** happen at boundary crossings rather than every inner-loop iteration
+The Clyde Next design is centered on this model:
+- an **actor** works on a **mission**
+- the **workspace** is the mutable project being changed
+- a **task** is the unit of work being requested
+- **policy** decides whether and how that task may run
+- an **environment** determines where the work happens
+
+In practice, Clyde uses:
+- a **workspace environment** for editing and low-authority code manipulation
+- a **research environment** for web search, documentation reading, and research artifacts
+- a **build environment** for fetch, build, test, and other project execution
+- a **broker environment** for push, sign, publish, and similar privileged actions
+
+[Terminology](terminology.md) defines the shared vocabulary used across the document set.
 
 ## Repository context
 

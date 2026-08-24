@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Component Architecture
+# Clyde Next: Component Architecture
 
 ## Purpose
 
@@ -7,6 +7,7 @@ This document defines the major components of Clyde Next and the responsibilitie
 It translates the high-level architecture, mission/lease model, task policy matrix, and sequence flows into a concrete subsystem view suitable for implementation planning.
 
 This document builds on:
+- [terminology.md](terminology.md)
 - [high-level-design.md](high-level-design.md)
 - [mission-lease-model.md](mission-lease-model.md)
 - [task-policy-matrix.md](task-policy-matrix.md)
@@ -14,13 +15,20 @@ This document builds on:
 
 ## Architecture Summary
 
+Using the terminology from [terminology.md](terminology.md), this document describes how Clyde's core terms map onto concrete subsystems:
+- the **workspace** maps to workspace-facing interfaces and workspace-environment execution
+- the **mission** and **actor** model map to mission and lease management
+- **policy** maps to task resolution and approval decisions
+- **environments** map to workspace-environment execution, build-environment execution, and brokered external actions
+
 Clyde Next should be implemented as a **trusted control plane** coordinating several specialized subsystems:
 - workspace and agent interface
 - mission and lease manager
 - policy engine
+- workspace-environment helper-edit execution path
 - snapshot manager
 - sandbox manager
-- artifact plane
+- artifact layer
 - credential broker
 - audit and provenance system
 
@@ -89,6 +97,7 @@ The following must be treated as untrusted:
 - package install hooks
 - browser automation hooks
 - arbitrary repo scripts
+- agent-authored utility scripts
 - outputs originating from untrusted execution until validated by policy
 
 ## Component Specifications
@@ -102,6 +111,7 @@ Provide the single interactive surface through which humans and agents interact 
 - expose code read/write APIs
 - host conversation state and task requests
 - enforce path-scoped file operations based on lease
+- request low-authority helper-driven workspace editing against the live workspace
 - present task status, logs, and artifacts
 - present approval prompts and mission summaries
 - provide a stable interface for IDE, TUI, or web UI clients
@@ -123,7 +133,8 @@ Provide the single interactive surface through which humans and agents interact 
 - trusted surface
 - may access live workspace within configured repo root
 - must not directly expose raw credentials
-- must not directly execute untrusted project code
+- must not directly execute untrusted project build/test code
+- may invoke the low-authority workspace environment for code-manipulation scripts only
 
 ### Interface sketch
 ```text
@@ -131,6 +142,7 @@ read_code(paths)
 edit_files(patch)
 create_mission(objective, scope?, preferences?)
 run_task(lease_id, task_type, path, options?)
+run_utility(lease_id, path, command, options?)
 request_subagent(parent_lease_id, purpose, scope, tasks, duration)
 request_escalation(lease_id, capability, reason, details)
 review_mission(mission_id)
@@ -213,7 +225,7 @@ Resolve missions, task policies, escalations, and approval requirements.
 
 ### Responsibilities
 - map task types to task policy profiles
-- determine runtime class and resource profile
+- determine environment, isolation profile, and resource profile
 - evaluate mission defaults by repo or organization policy
 - decide whether a request is auto-approvable, approval-gated, or denied
 - enforce invariants such as no raw credentials in untrusted tasks
@@ -235,8 +247,9 @@ Resolve missions, task policies, escalations, and approval requirements.
 Potential policy inputs include:
 - built-in Clyde defaults
 - repo-local policy config
+- repo-local guidance such as `AGENTS.md`
 - org/team policy overlays
-- runtime environment policy
+- host environment policy
 
 ### Trust properties
 - trusted
@@ -293,6 +306,7 @@ Convert live mutable workspace content into immutable task inputs.
 - snapshots should be read-only to untrusted tasks
 - snapshot creation should be fast enough for inner-loop iteration
 - snapshots should not accidentally include excluded paths such as secrets, local browser state, or unrelated repos
+- helper-driven `workspace.edit` is intentionally not snapshot-based; it uses the workspace environment directly and must remain distinct from build/test/fetch policy paths
 
 ### Trust properties
 - trusted
@@ -304,9 +318,10 @@ Convert live mutable workspace content into immutable task inputs.
 Launch and supervise isolated task execution.
 
 ### Responsibilities
-- choose runtime class based on resolved task policy
+- choose the appropriate environment and isolation backend based on resolved task policy
 - materialize sandbox inputs and outputs
 - configure network, mounts, scratch, and resource limits
+- support both snapshot-based build-environment execution and live-workspace utility execution
 - start, monitor, stop, and clean up sandboxes
 - stream logs and status back to Clyde
 - support retries and debug retention policies
@@ -328,6 +343,7 @@ Launch and supervise isolated task execution.
 
 ### Runtime backends
 Initial implementations may support:
+- edit-helper backend for helper-driven `workspace.edit`
 - container backend
 - hardened container backend
 - microVM backend
@@ -336,6 +352,11 @@ Later implementations may add:
 - remote isolated runners
 - browser-specialized runners
 - policy-specialized fetch runners
+
+The utility sandbox backend has strict requirements:
+- it must use a separate image/runtime from build/test/fetch backends
+- it must provide tooling for text and code manipulation
+- it must not include the full project build toolchain
 
 ### Trust properties
 - trusted orchestrator, untrusted workload
@@ -366,7 +387,7 @@ Store and move snapshots, dependency bundles, outputs, logs, traces, and provena
 - approval records
 
 ### Trust properties
-- trusted metadata plane
+- trusted metadata layer
 - content may be untrusted; consumers should know artifact origin and trust class
 
 ## 9. Broker Gateway
@@ -410,7 +431,7 @@ Execute privileged actions without exposing raw credentials to agents or untrust
 
 ### Trust properties
 - highly trusted
-- must be isolated from untrusted execution plane
+- must be isolated from the build environment
 
 ## 11. Audit and Provenance System
 
@@ -578,7 +599,7 @@ The critical implementation insight is that the product does not need one giant 
 - grant bounded autonomy through missions and leases
 - translate agent requests into typed policy-resolved tasks
 - run hostile code in isolated sandboxes
-- move outputs through an artifact plane
+- move outputs through an artifact layer
 - keep credentials behind brokered authority boundaries
 
 This component model provides the implementation backbone for the security and UX model described in the rest of the Clyde Next design docs.

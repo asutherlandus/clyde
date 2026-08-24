@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Sequence Flows and Interaction Scenarios
+# Clyde Next: Sequence Flows and Interaction Scenarios
 
 ## Purpose
 
@@ -9,22 +9,30 @@ It shows how humans, agents, missions, leases, task policies, sandboxes, artifac
 This document is intended to make the high-level architecture and mission/lease model concrete enough to guide implementation and UX design.
 
 It builds on:
+- [terminology.md](terminology.md)
 - [high-level-design.md](high-level-design.md)
 - [mission-lease-model.md](mission-lease-model.md)
 - [task-policy-matrix.md](task-policy-matrix.md)
 
 ## Participants
 
+Using the terminology from [terminology.md](terminology.md), the flows below are mostly about:
+- **actors**: the human, agent, or sub-agent doing work
+- the **workspace**: the mutable project being changed
+- **tasks**: the units of work being requested
+- **policy**: the rules deciding whether and how tasks may run
+- **environments**: the workspace, build, or broker contexts where work happens
+
 The main participants in the flows below are:
 - **Human**: the developer supervising the work
 - **Agent**: the primary coding agent
 - **Sub-agent**: a derived bounded agent, when used
-- **Workspace**: mutable code-editing environment
+- **Workspace**: mutable project files being edited
 - **Clyde Control Plane**: policy, missions, leases, scheduling, approvals
 - **Policy Engine**: resolves task and approval policy
-- **Snapshot Manager**: seals workspace inputs for execution
-- **Sandbox Runtime**: runs untrusted tasks in isolated execution environments
-- **Artifact Plane**: stores logs, outputs, bundles, traces, and provenance
+- **Snapshot Manager**: seals workspace inputs for build execution
+- **Sandbox Runtime**: runs tasks in isolated environments
+- **Artifact Layer**: stores logs, outputs, bundles, traces, and provenance
 - **Credential Broker**: performs git/sign/publish operations without exposing raw credentials
 
 ## Reading Guide
@@ -40,7 +48,7 @@ The exact wire protocol is intentionally unspecified here. These are conceptual 
 ## Scenario 1: Start a mission and issue a primary lease
 
 ### Intent
-A human asks Clyde to implement a feature. Clyde creates a mission, proposes an autonomy envelope, gets approval, and issues a primary agent lease.
+A human actor asks Clyde to implement a feature. Clyde creates a mission, proposes an autonomy envelope, gets approval, and issues a primary agent lease.
 
 ### Sequence
 ```text
@@ -49,7 +57,7 @@ Clyde -> Policy Engine: propose mission from request + repo defaults
 Policy Engine -> Clyde: suggested mission envelope
 Clyde -> Human: mission proposal
   - scope: backend/auth, backend/tests/auth
-  - tasks: rust.check, rust.test.unit, rust.test.integration.synthetic
+  - tasks: workspace.edit, rust.check, rust.test.unit, rust.test.integration.synthetic
   - network: none
   - credentials: none
   - duration: 45m
@@ -69,10 +77,10 @@ Clyde -> Audit Log: record mission + lease issuance
 - the mission proposal should be easy to read and easy to narrow
 - the human should approve outcomes and envelopes, not every loop iteration
 
-## Scenario 2: Safe inner-loop edit / check / test iteration
+## Scenario 2: Safe inner-loop edit / helper-edit / check / test iteration
 
 ### Intent
-The agent works autonomously inside its lease, editing code and running safe offline tasks without repeated approval.
+The actor works autonomously inside its lease, editing code, using low-authority edit helpers, and running safe offline tasks without repeated approval.
 
 ### Sequence
 ```text
@@ -83,13 +91,20 @@ Agent -> Clyde: edit_files(...)
 Clyde -> Workspace: apply patch within lease scope
 Clyde -> Audit Log: record edit batch
 
+Agent -> Clyde: edit_files(mode=scripted, path=backend/auth, command="python /tmp/codemod.py")
+Clyde -> Policy Engine: resolve workspace.edit helper-execution policy
+Policy Engine -> Clyde: T1 / R2 / live-workspace / no-network / no-credentials
+Clyde -> Sandbox Runtime: launch edit-helper runtime with lease-scoped live workspace mount
+Sandbox Runtime -> Clyde: edit result + diff summary + logs
+Clyde -> Agent: edit status + logs reference
+
 Agent -> Clyde: run_task(type=rust.check, path=backend/auth, lease=...)
 Clyde -> Policy Engine: resolve rust.check policy
 Policy Engine -> Clyde: T2 / R3 / no-network / no-credentials
 Clyde -> Snapshot Manager: snapshot backend/auth subtree
 Snapshot Manager -> Clyde: snapshot id
 Clyde -> Sandbox Runtime: launch rust.check with snapshot + policy
-Sandbox Runtime -> Artifact Plane: stream logs, outputs, provenance
+Sandbox Runtime -> Artifact Layer: stream logs, outputs, provenance
 Sandbox Runtime -> Clyde: task result
 Clyde -> Agent: task status + logs reference
 
@@ -97,7 +112,7 @@ Agent -> Clyde: run_task(type=rust.test.unit, path=backend/auth, lease=...)
 Clyde -> Policy Engine: resolve rust.test.unit policy
 Clyde -> Snapshot Manager: snapshot current subtree
 Clyde -> Sandbox Runtime: run unit tests
-Sandbox Runtime -> Artifact Plane: logs + coverage + failure artifacts
+Sandbox Runtime -> Artifact Layer: logs + coverage + failure artifacts
 Sandbox Runtime -> Clyde: result
 Clyde -> Agent: logs + failure summary
 
@@ -106,12 +121,15 @@ Agent -> Clyde: edit_files(fix based on failures)
 ```
 
 ### Security properties
-- build and test use sealed snapshots, not live mutable mounts
+- helper-driven edits run in a separate low-authority execution mode with a live scoped workspace mount
+- that edit-helper execution does not carry the full project build/test toolchain
+- build and test still use sealed snapshots, not live mutable mounts
 - no network or credentials are available in the inner loop
 - each task is attributable to mission + lease + actor
 
 ### UX notes
 - this should feel fast and nearly continuous
+- one-off codemods and edit helpers should be cheap to run
 - the agent should see policy, logs, and failure artifacts together
 - the human should be able to watch but not be required to intervene
 
@@ -149,7 +167,7 @@ Clyde -> Agent: lease updated or side lease issued for rust.resolve-deps
 Agent -> Clyde: run_task(type=rust.resolve-deps, path=backend/, lease=...)
 Clyde -> Snapshot Manager: snapshot lockfiles + config
 Clyde -> Sandbox Runtime: launch fetch sandbox with registry-only egress
-Sandbox Runtime -> Artifact Plane: dependency bundle + fetch manifest
+Sandbox Runtime -> Artifact Layer: dependency bundle + fetch manifest
 Sandbox Runtime -> Clyde: success
 Clyde -> Agent: dependency bundle available
 Agent -> Clyde: rerun rust.check
@@ -189,12 +207,12 @@ Clyde -> Workspace: apply edits within derived scope
 Sub-agent -> Clyde: run_task(type=web.build, path=frontend/login, lease=derived)
 Clyde -> Snapshot Manager: create scoped snapshot
 Clyde -> Sandbox Runtime: run build in isolated sandbox
-Sandbox Runtime -> Artifact Plane: build logs/assets
+Sandbox Runtime -> Artifact Layer: build logs/assets
 Clyde -> Sub-agent: result
 
 Sub-agent -> Clyde: run_task(type=browser.test.synthetic, path=frontend/login, lease=derived)
 Clyde -> Sandbox Runtime: run browser test with synthetic identity
-Sandbox Runtime -> Artifact Plane: screenshots/traces/logs
+Sandbox Runtime -> Artifact Layer: screenshots/traces/logs
 Clyde -> Sub-agent: result
 
 Sub-agent -> Clyde: summarize status
@@ -223,7 +241,7 @@ Policy Engine -> Clyde: synthetic network only, no credentials
 Clyde -> Snapshot Manager: create snapshot
 Clyde -> Sandbox Runtime: launch integration sandbox
 Clyde -> Sandbox Runtime: attach synthetic Postgres, fake SMTP, fake OAuth
-Sandbox Runtime -> Artifact Plane: logs + traces + db snapshots if needed
+Sandbox Runtime -> Artifact Layer: logs + traces + db snapshots if needed
 Sandbox Runtime -> Clyde: result
 Clyde -> Agent: results available
 ```
@@ -266,7 +284,7 @@ Clyde -> Agent: temporary authority granted
 Agent -> Clyde: run_task(type=browser.test.external, lease=...)
 Clyde -> Sandbox Runtime: launch isolated browser sandbox
 Clyde -> Sandbox Runtime: attach scoped token, isolated browser profile
-Sandbox Runtime -> Artifact Plane: screenshots, traces, logs
+Sandbox Runtime -> Artifact Layer: screenshots, traces, logs
 Sandbox Runtime -> Clyde: result
 Clyde -> Agent: results
 ```
@@ -288,7 +306,7 @@ The human wants to understand what the agent actually did during an autonomous m
 ### Sequence
 ```text
 Human -> Clyde: show mission status
-Clyde -> Artifact Plane: collect task records, outputs, logs
+Clyde -> Artifact Layer: collect task records, outputs, logs
 Clyde -> Audit Log: collect edits, leases, sub-agents, escalations
 Clyde -> Human: mission summary
   - files changed
@@ -317,7 +335,7 @@ The agent finishes work and prepares a commit candidate, but does not automatica
 ```text
 Agent -> Clyde: request operation git.commit.prepare
 Clyde -> Workspace: compute scoped diff and commit proposal
-Clyde -> Artifact Plane: store commit metadata and diff summary
+Clyde -> Artifact Layer: store commit metadata and diff summary
 Clyde -> Human: review proposed commit
 Human -> Clyde: approve commit preparation
 Clyde -> Workspace or control plane: create local commit object if policy allows
@@ -379,7 +397,7 @@ Clyde -> Human: publish plan
   - destination registry
 Human -> Clyde: approve
 Clyde -> Credential Broker: sign selected manifest or digest
-Credential Broker -> Artifact Plane: store signature
+Credential Broker -> Artifact Layer: store signature
 Clyde -> Credential Broker: publish selected artifact set
 Credential Broker -> Clyde: publish result
 Clyde -> Audit Log: record sign + publish chain
@@ -438,7 +456,7 @@ Clyde -> Audit Log: record revocation reason
 Clyde -> Agent: lease revoked
 Clyde -> Sub-agent(s): derived leases revoked
 Clyde -> Sandbox Runtime: stop or quarantine running tasks per policy
-Clyde -> Artifact Plane: preserve logs, snapshots, outputs for review
+Clyde -> Artifact Layer: preserve logs, snapshots, outputs for review
 Clyde -> Credential Broker: freeze pending authority operations
 Clyde -> Human: revocation complete, review package available
 ```

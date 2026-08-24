@@ -1,4 +1,4 @@
-# Clean-Sheet Clyde: Task Policy Matrix
+# Clyde Next: Task Policy Matrix
 
 ## Purpose
 
@@ -14,21 +14,26 @@ It translates the threat model, requirements, high-level architecture, and missi
 
 This document builds on:
 - [problem-statement-threat-model.md](problem-statement-threat-model.md)
+- [terminology.md](terminology.md)
 - [requirements.md](requirements.md)
 - [high-level-design.md](high-level-design.md)
 - [mission-lease-model.md](mission-lease-model.md)
 
 ## Design Intent
 
+Using the terminology from [terminology.md](terminology.md), this document focuses on two parts of the core Clyde model:
+- **task**: the unit of work being requested
+- **policy**: the rules that decide whether and how that task may run
+
 The matrix exists to prevent Clyde from collapsing back into "run arbitrary shell in a container."
 
-Instead of a flat command model, Clyde should expose a set of typed tasks with explicit policy. A mission or lease may authorize a task family such as `rust.check`, but the task policy still determines exactly how that task runs.
+Instead of a flat command model, Clyde should expose a set of typed tasks with explicit policy. A mission or lease may authorize a task such as `rust.check`, but policy still determines exactly how that task runs and in which environment.
 
 ## Policy Dimensions
 
 Each task profile should define at least the following dimensions:
+- **environment**
 - **trust class**
-- **runtime class**
 - **input scope**
 - **writable outputs**
 - **network policy**
@@ -47,9 +52,12 @@ Clyde Next should classify tasks into five broad trust classes.
 - no network required
 - safe for broad agent autonomy within lease
 
-### T1: Trusted tool execution
-- trusted built-in tools only
-- project code not executed as code
+### T1: Low-authority editing support
+- trusted built-in tools or agent-authored edit helpers
+- project build/test/install code not executed as code
+- may operate on live workspace within lease scope
+- separate edit-execution support with text/code-manipulation tooling only
+- no full project build toolchain available
 - low risk
 
 ### T2: Untrusted offline execution
@@ -81,7 +89,7 @@ For simple control-plane or workspace actions.
 For trusted binaries that inspect or transform files without executing repo code.
 
 ### R2: Hardened container
-For medium-risk tasks or compatibility paths.
+For low-authority utility execution, medium-risk tasks, or compatibility paths.
 
 ### R3: MicroVM or equivalent strong sandbox
 Preferred for untrusted build, dependency install, browser, and arbitrary repo execution.
@@ -106,7 +114,7 @@ Unless a task explicitly says otherwise:
 | Task | Trust | Runtime | Source input | Writable output | Network | Credentials | Agent autonomy | Approval |
 |---|---|---|---|---|---|---|---|---|
 | `workspace.read` | T0 | R0 | live workspace scoped | none | none | none | yes | none |
-| `workspace.edit` | T0 | R0 | live workspace scoped | repo paths in lease | none | none | yes | none |
+| `workspace.edit` | T0/T1 | R0/R2 | live workspace scoped | repo paths in lease + scratch | none | none | yes | none/policy |
 | `repo.search` | T0 | R0/R1 | live workspace scoped | none | none | none | yes | none |
 | `format.trusted` | T1 | R1 | snapshot or live scoped | allowed repo paths | none | none | yes | none |
 | `lint.static` | T1 | R1 | snapshot scoped | logs only | none | none | yes | none |
@@ -156,17 +164,28 @@ Purpose:
 - modify files
 - create patches
 - refactor scoped code
+- run scripted or tool-assisted edits against the live workspace
+- support codemods, structured rewrites, batch edits, config updates, and similar editing helpers
 
 Policy:
-- trust: T0
-- runtime: R0
-- writes limited to lease repo scope
-- no network
-- no credentials
+- trust: T0 for direct edits, T1 for helper-driven edits
+- runtime: R0 for direct edits, R2 when helper execution is needed
+- source: live workspace paths within lease
+- writes: lease-scoped repo paths plus isolated scratch when needed
+- network: none
+- credentials: none
+
+Strict execution requirements for helper-driven edits:
+- must use a separate image/runtime from build/test/fetch sandboxes
+- must include tooling for text and code manipulation
+- must not include the full project build toolchain
+- must not be used for repo-defined build/test/install workflows
 
 Usage:
 - primary inner-loop operation for agents
-- should be budgeted and auditable
+- safe for repeated automation when limited to editing work
+- scripted edit bodies, command lines, and resulting diffs should be auditable
+- if the edit needs project build tooling or broader authority, it must be reclassified into another typed task
 
 ### `repo.search`
 Purpose:
@@ -454,6 +473,7 @@ Policy:
 
 Notes:
 - this exists as a migration path, not as the preferred steady-state model
+- it is distinct from `workspace.edit`, which may include live-workspace code manipulation but must not carry the full project build toolchain
 
 ## Inner-Loop vs Boundary-Crossing Tasks
 
@@ -527,9 +547,6 @@ For an initial implementation, Clyde Next should prioritize these task types:
 - `rust.resolve-deps`
 - `rust.check`
 - `rust.test.unit`
-- `node.resolve-deps`
-- `web.build`
-- `browser.test.synthetic`
 - `git.push`
 - `artifact.sign` later
 
@@ -540,8 +557,8 @@ This subset is enough to validate the core least-privilege and agentic workflow 
 The task policy matrix is the operational bridge between Clyde's security model and its user experience.
 
 It lets Clyde support agentic coding without giving agents ambient power by ensuring that:
-- each action belongs to a typed task family
-- each task family has explicit isolation semantics
+- each action belongs to a typed task
+- each task has explicit isolation semantics
 - safe inner-loop tasks can be automated
 - boundary-crossing tasks remain visible and reviewable
 - credentials stay in brokered authority paths rather than leaking into execution sandboxes
