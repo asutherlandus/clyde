@@ -1,1 +1,6 @@
-//! Wire types, actor-facing view types, MCP tool and JSON-RPC definitions
+//! `clyde-api`: the wire surface.
+pub mod admin;
+pub mod codec;
+pub mod jsonrpc;
+pub mod mcp;
+pub mod views;
