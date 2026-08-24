@@ -140,7 +140,12 @@ impl FetchManifest {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
     use super::*;
 
     fn attempt(host: &str, decision: EgressDecision, bytes: u64) -> EgressAttempt {

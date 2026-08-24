@@ -20,6 +20,12 @@ const HOUR: u64 = 60 * MINUTE;
 const DAY: u64 = 24 * HOUR;
 
 impl HumanDuration {
+    /// The smallest representable positive duration.
+    ///
+    /// Exists so that infallible construction is available in `const` and
+    /// fallback positions, without an `unwrap` in production code.
+    pub const MINIMUM: Self = Self(Duration::from_secs(1));
+
     /// Parses `<positive integer><unit>` where unit is `s`, `m`, `h`, or `d`.
     pub fn parse(value: &str) -> Result<Self, ValidationError> {
         let malformed = || ValidationError::MalformedDuration {
@@ -108,7 +114,12 @@ impl<'de> Deserialize<'de> for HumanDuration {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
     use super::*;
 
     #[test]

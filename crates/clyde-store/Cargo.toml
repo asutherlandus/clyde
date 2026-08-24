@@ -15,6 +15,11 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[features]
+# Exposes the destructive test helpers that bypass the append-only audit API,
+# so integration tests outside this crate can exercise tamper detection.
+test-support = []
+
 [dev-dependencies]
 tempfile.workspace = true
 

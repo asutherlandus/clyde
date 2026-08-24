@@ -241,7 +241,12 @@ pub enum DeclaredActorKind {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
     use super::*;
 
     const ULID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";

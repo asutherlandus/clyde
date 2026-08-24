@@ -239,7 +239,12 @@ pub fn is_within_any<'a>(path: &RepoPath, roots: impl IntoIterator<Item = &'a Re
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
     use super::*;
     use std::collections::BTreeSet;
 
