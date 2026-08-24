@@ -8,6 +8,9 @@
 //! socket.
 
 pub mod access;
+pub mod actor_api;
+pub mod admin_api;
+pub mod agent;
 pub mod approvals;
 pub mod artifacts;
 pub mod audit;
@@ -17,8 +20,11 @@ pub mod daemon;
 pub mod error;
 pub mod missions;
 pub mod paths;
+pub mod publish;
+pub mod review;
 pub mod sandboxes;
 pub mod server;
+pub mod subagents;
 pub mod tasks;
 
 pub use daemon::{Daemon, DaemonOptions};

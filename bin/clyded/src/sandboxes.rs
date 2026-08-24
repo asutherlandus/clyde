@@ -673,3 +673,63 @@ mod tests {
         assert!(needs_egress_socket(&EgressProfile::RustRegistry));
     }
 }
+
+/// Fixtures shared with other modules' tests.
+#[cfg(test)]
+pub mod tests_support {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    use chrono::Utc;
+    use clyde_core::HumanDuration;
+    use clyde_core::budget::{Budget, BudgetUsage};
+    use clyde_core::classification::CredentialPolicy;
+    use clyde_core::ids::{self, ActorId};
+    use clyde_core::lease::{AuthorityFlags, Lease, LeaseState};
+    use clyde_core::mission::MissionScope;
+    use clyde_core::repo_path::RepoPath;
+    use clyde_core::task::TaskType;
+
+    /// A lease with model-API egress and one editable subtree.
+    pub fn lease() -> Lease {
+        let issued = Utc::now();
+        Lease {
+            id: ids::new::lease_id().unwrap(),
+            mission: ids::new::mission_id().unwrap(),
+            parent: None,
+            actor: ActorId::parse("agent:claude").unwrap(),
+            issued_by: ActorId::parse("human:clyde").unwrap(),
+            issued_at: issued,
+            expires_at: issued + chrono::Duration::hours(1),
+            repo_scope: MissionScope {
+                edit_paths: [RepoPath::parse("crates/core").unwrap()]
+                    .into_iter()
+                    .collect(),
+                read_paths: Default::default(),
+            },
+            task_scope: [TaskType::RustCheck].into_iter().collect(),
+            network_scope: EgressProfile::ModelApi,
+            credential_scope: CredentialPolicy::None,
+            authority: AuthorityFlags {
+                may_edit: true,
+                may_request_tasks: true,
+                may_spawn_subagents: true,
+                may_request_publish: false,
+            },
+            budget: Budget {
+                max_duration: HumanDuration::parse("1h").unwrap(),
+                max_task_runs: 10,
+                max_parallel_subagents: 1,
+                max_subagents: 2,
+                max_cpu_seconds: 600,
+                max_cache_bytes: 1 << 30,
+                max_artifact_bytes: 1 << 28,
+                max_egress_bytes: 1 << 20,
+                max_egress_requests: 100,
+            },
+            usage: BudgetUsage::default(),
+            state: LeaseState::Active,
+            purpose: "primary".to_owned(),
+        }
+    }
+}
