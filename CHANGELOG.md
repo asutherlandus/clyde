@@ -33,6 +33,9 @@ The MVP slice, Phases 0 through 4, implemented against the design document set i
   cannot change what the host is permitted to run.
 - Fifteen test fixtures, each stating the property it asserts in its own README.
 
+[INSTALL.md](INSTALL.md) covers host setup for both backends, including what is
+missing on the Firecracker side and why supplying KVM is not enough.
+
 ### Phase 1 — mission, lease, and approval
 
 - Two sockets, and the separation is the mechanism rather than a policy: the
