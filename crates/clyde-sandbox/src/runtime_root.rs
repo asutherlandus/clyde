@@ -41,15 +41,23 @@ impl RuntimeRoot {
                 detail: "runtime root store path does not exist".to_owned(),
             });
         }
+        // Configuration names a GC root — `/nix/var/nix/gcroots/clyde/rust` —
+        // which is a symlink into the store and exists on the host only. What the
+        // sandbox binds is the closure, and a closure is store paths, so a
+        // program addressed through the GC root is unreachable inside the sandbox
+        // however complete that closure is. The store path is also the root's
+        // identity (D6); the GC root is an anchor against garbage collection, not
+        // a name a task can be handed.
+        let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let closure = match manifest_dir {
             Some(dir) => read_store_paths(&dir.join(kind.name()).join("store-paths"))
-                .unwrap_or_else(|| vec![path.to_path_buf()]),
-            None => vec![path.to_path_buf()],
+                .unwrap_or_else(|| vec![path.clone()]),
+            None => vec![path.clone()],
         };
         let binaries = read_binaries(&path.join("bin"));
         Ok(Self {
             kind,
-            path: path.to_path_buf(),
+            path,
             closure,
             binaries,
         })
@@ -63,6 +71,29 @@ impl RuntimeRoot {
     pub fn program(&self, name: &str) -> Option<PathBuf> {
         let candidate = self.path.join("bin").join(name);
         candidate.exists().then_some(candidate)
+    }
+
+    /// Whether `program` will still resolve once only this closure is bound.
+    ///
+    /// A `buildEnv` root is a tree of symlinks into other store paths, so a
+    /// program that resolves on the host resolves inside the sandbox only if the
+    /// path it points at is itself bound. When the closure is just the root —
+    /// which is what a missing manifest directory yields — every such symlink
+    /// dangles, and the only diagnostic is `bwrap: execvp …: No such file or
+    /// directory`, which reads as a missing toolchain rather than as an unbound
+    /// closure.
+    pub fn resolves_inside_sandbox(&self, program: &Path) -> bool {
+        let Ok(target) = program.canonicalize() else {
+            return false;
+        };
+        if target.starts_with(&self.path) {
+            return true;
+        }
+        self.closure.iter().any(|bound| {
+            bound
+                .canonicalize()
+                .is_ok_and(|bound| target.starts_with(&bound))
+        })
     }
 }
 
@@ -205,6 +236,35 @@ mod tests {
         clippy::indexing_slicing
     )]
     use super::*;
+
+    #[test]
+    fn a_root_configured_through_a_gc_root_resolves_to_its_store_path() {
+        // Configuration names `/nix/var/nix/gcroots/clyde/rust`, which exists on
+        // the host and not in the sandbox: the sandbox binds the closure, and a
+        // closure is store paths. Handing a task the GC-root path produces
+        // `bwrap: execvp …: No such file or directory` however complete the
+        // closure is.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store/clyde-runtime-root-rust");
+        std::fs::create_dir_all(store.join("bin")).unwrap();
+        std::fs::write(store.join("bin/cargo"), b"#!/bin/sh\n").unwrap();
+        let gcroot = dir.path().join("gcroots/rust");
+        std::fs::create_dir_all(dir.path().join("gcroots")).unwrap();
+        std::os::unix::fs::symlink(&store, &gcroot).unwrap();
+
+        let root = RuntimeRoot::read(RuntimeRootKind::Rust, &gcroot, None).unwrap();
+        let program = root.program("cargo").expect("cargo is in the root");
+        assert!(
+            !program.starts_with(dir.path().join("gcroots")),
+            "a task must not be handed the GC-root path: {}",
+            program.display()
+        );
+        assert_eq!(program, store.canonicalize().unwrap().join("bin/cargo"));
+        assert!(
+            root.resolves_inside_sandbox(&program),
+            "the store path is what the closure binds"
+        );
+    }
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_owned()).collect()

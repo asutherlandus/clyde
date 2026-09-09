@@ -1,0 +1,20 @@
+[package]
+name = "clyde-init"
+description = "The microVM guest init: mounts the job's drives, runs the task, reports what happened"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+clyde-guest-api.workspace = true
+rustix = { workspace = true, features = ["fs", "mount", "process", "system", "std"] }
+thiserror.workspace = true
+vsock.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -26,6 +26,11 @@
 
         runtimeRoots = import ./nix/runtime-roots.nix { inherit pkgs; };
 
+        # The microVM guest: kernel, init, and one root image per runtime root
+        # (Part 1b). Kept out of the default package so a developer without KVM
+        # never pays for a kernel build.
+        guest = import ./nix/guest.nix { inherit pkgs runtimeRoots; };
+
         # Tools every developer and every CI job gets.
         devTools = [
           rustToolchain
@@ -33,6 +38,11 @@
           pkgs.cargo-deny
           pkgs.cargo-insta
           pkgs.bubblewrap
+          # Guest image tooling (Part 1b): `mke2fs -d` builds the source and
+          # mission-cache images unprivileged, `mkfs.erofs` builds the read-only
+          # roots (R12).
+          pkgs.e2fsprogs
+          pkgs.erofs-utils
           pkgs.sqlite
           pkgs.git
           pkgs.jq
@@ -92,6 +102,18 @@
           inherit (runtimeRoots) workspace rust fetch;
           runtimeRootManifests = runtimeRoots.manifests;
           default = runtimeRoots.workspace;
+
+          # Part 1b: the microVM guest. `guestVm` is the whole directory the
+          # daemon expects under its state directory, so bring-up is a symlink
+          # rather than a copy procedure.
+          guestKernel = guest.vmlinux;
+          guestInit = guest.init;
+          # One attribute per image rather than the set, so a single root can be
+          # rebuilt on its own and `nix flake check` sees derivations.
+          guestImageWorkspace = guest.images.workspace;
+          guestImageRust = guest.images.rust;
+          guestImageFetch = guest.images.fetch;
+          guestVm = guest.vm;
         };
 
         # Runtime roots are addressed by content identity so a task policy can
@@ -108,7 +130,8 @@
             export CLYDE_RUNTIME_ROOT_RUST="${runtimeRoots.rust}"
             export CLYDE_RUNTIME_ROOT_FETCH="${runtimeRoots.fetch}"
             export CLYDE_BWRAP="${pkgs.bubblewrap}/bin/bwrap"
-            echo "clyde devshell: $(rustc --version)"
+            export CLYDE_MKE2FS="${pkgs.e2fsprogs}/bin/mke2fs"
+            echo "clyde devshell: $(rustc --version)" >&2
           '';
         };
 

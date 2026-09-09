@@ -5,64 +5,18 @@
 //! config is loaded per workspace, because it is untrusted content whose
 //! rejections must be attributed to that workspace.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::Utc;
 use clyde_core::ids::WorkspaceId;
 use clyde_policy::config::{Config, ConfigError, ConfigLoadRecord, ConfigSource, apply_layer};
 use clyde_store::{ConfigLoad, Store};
 
-/// Where the host and user configuration files live.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigPaths {
-    pub host: PathBuf,
-    pub user: Option<PathBuf>,
-}
-
-impl ConfigPaths {
-    pub fn discover() -> Self {
-        let user = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-            .map(|base| base.join("clyde").join("config.toml"));
-        Self {
-            host: std::env::var_os("CLYDE_HOST_CONFIG")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/etc/clyde/config.toml")),
-            user,
-        }
-    }
-}
-
-/// The base configuration and the records of how it was loaded.
-#[derive(Debug, Clone)]
-pub struct LoadedConfig {
-    pub config: Config,
-    pub records: Vec<ConfigLoadRecord>,
-}
-
-/// Loads defaults, then host, then user configuration.
-///
-/// A missing file is not an error; an unreadable or malformed one is, because
-/// silently running on defaults when an operator believes they configured
-/// something is exactly the failure D14 exists to prevent.
-pub fn load_base(paths: &ConfigPaths) -> Result<LoadedConfig, ConfigError> {
-    let mut config = Config::defaults();
-    let mut records = Vec::new();
-    for (path, source) in [
-        (Some(paths.host.clone()), ConfigSource::Host),
-        (paths.user.clone(), ConfigSource::User),
-    ] {
-        let Some(path) = path else { continue };
-        let Some(text) = read_optional(&path) else {
-            continue;
-        };
-        let (next, record) = apply_layer(config, &text, source)?;
-        config = next;
-        records.push(record);
-    }
-    Ok(LoadedConfig { config, records })
-}
+/// Where the host and user configuration files live, and how the base layers
+/// load. Both now live in `clyde-policy`, because `clyde doctor` needs the same
+/// answer when the daemon is unreachable — which is exactly when a host is being
+/// brought up (R9).
+pub use clyde_policy::config::host_files::{ConfigPaths, LoadedConfig, load_base};
 
 /// Applies a workspace's `.clyde/policy.toml` on top of the base configuration.
 ///
@@ -74,7 +28,7 @@ pub fn load_repository(
     workspace_root: &Path,
 ) -> Result<(Config, Option<ConfigLoadRecord>), ConfigError> {
     let path = workspace_root.join(".clyde").join("policy.toml");
-    let Some(text) = read_optional(&path) else {
+    let Some(text) = clyde_policy::config::host_files::read_optional(&path)? else {
         return Ok((base.clone(), None));
     };
     let (config, record) = apply_layer(base.clone(), &text, ConfigSource::Repository)?;
@@ -121,19 +75,6 @@ pub fn record_rejection(store: &dyn Store, workspace: Option<&WorkspaceId>, erro
     };
     if let Err(error) = store.record_config_load(load) {
         tracing::error!(error = %error, "recording a config rejection failed");
-    }
-}
-
-fn read_optional(path: &Path) -> Option<String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            // An unreadable file is reported rather than treated as absent: the
-            // operator believes it is in force.
-            tracing::error!(path = %path.display(), error = %error, "configuration file is unreadable");
-            None
-        }
     }
 }
 

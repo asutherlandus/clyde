@@ -8,15 +8,29 @@ Clyde is security-critical software. It coordinates isolated environments, handl
 
 ## Design documents and decisions
 
-Before implementing anything, read [docs/decisions.md](docs/decisions.md). It records the binding implementation decisions for Phases 0-4 with rationale, consequences, and the open questions that are still undecided.
+Before implementing anything, read [docs/builder/decisions.md](docs/builder/decisions.md). It records the binding implementation decisions for Phases 0-4 with rationale, consequences, and the open questions that are still undecided.
+
+### The two products
+The MVP is split into two products ([D23](docs/builder/decisions.md#d23-the-mvp-splits-into-the-builder-and-the-warden)): **the builder**, the sandboxed build pipeline, and **the warden**, the agent harness. They were called Part 1 and Part 2 in earlier drafts and in commit history. Know which one you are working in before you start — it decides which boundaries are load-bearing for the change you are making.
+
+The document set is partitioned to match: [docs/builder/](docs/builder/) and [docs/warden/](docs/warden/), with the vocabulary and threat model shared at [docs/](docs/README.md).
+
+The warden is named for what it holds custody of — the driver's authority — not for confining a prisoner: the agent it hosts is semi-trusted, careless rather than hostile. It creates sandboxes; it is not one. Keep `Sandbox*` in code for the isolation mechanism and reserve "warden" for the product.
+
+Two rules follow from the split and are worth stating as rules:
+
+- **No crate under `crates/` may have a notion of an agent process.** The split is a daemon-layer boundary. A library crate that needs to know whether an agent exists is a sign it has slipped.
+- **Do not describe the builder as though the warden were present.** The builder cannot stop a driver executing project code outside Clyde; it reports that as `advisory` posture ([D26](docs/builder/decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)). Code comments, error messages, and docs should not claim a guarantee that depends on a deployment shape they cannot see.
 
 ### Reading order for implementation work
-1. [docs/decisions.md](docs/decisions.md) — what has been decided and why
-2. the spec for the phase being worked on: [Phase 0](docs/phase-0-foundations.md), [Phase 1](docs/phase-1-mission-lease-approval.md), [Phase 2](docs/phase-2-execution-and-isolation.md), [Phase 3](docs/phase-3-dependency-resolution.md), [Phase 4](docs/phase-4-credential-broker.md)
-3. [docs/schema-reference.md](docs/schema-reference.md) for entity definitions, state machines, and invariants
-4. [docs/agent-and-workspace-environment.md](docs/agent-and-workspace-environment.md) and [docs/network-egress-model.md](docs/network-egress-model.md) for the two subsystems whose design is least obvious from the code
+1. [docs/builder/decisions.md](docs/builder/decisions.md) — what has been decided and why. Read [D23](docs/builder/decisions.md#d23-the-mvp-splits-into-the-builder-and-the-warden) first: it changes what several earlier decisions are decisions *about*. The four warden decisions (D1, D11, D17, D20) live in [docs/warden/decisions.md](docs/warden/decisions.md)
+2. [docs/builder/roadmap.md](docs/builder/roadmap.md#the-two-products) — the map of the split
+3. the spec for the phase being worked on: [Phase 0](docs/builder/roadmap.md#phase-0-foundations), [Phase 1](docs/builder/roadmap.md#phase-1-mission-lease-and-approval-core), [Parts 1a/1b](docs/builder/roadmap.md#part-1a-snapshots-and-the-namespace-backend), [Phase 3](docs/builder/roadmap.md#phase-3-separate-dependency-resolution), [Phase 4](docs/builder/roadmap.md#phase-4-credential-broker-and-brokered-git-push), or [the warden](docs/warden/spec.md)
+4. [docs/builder/schema.md](docs/builder/schema.md) for entity definitions, state machines, and invariants
+5. [the egress model](docs/builder/tasks-and-policy.md#the-egress-model) and [docs/warden/design.md](docs/warden/design.md) — the two subsystems whose design is least obvious from the code
+6. [docs/security-model.md](docs/security-model.md) — the whole enforced model in one place, graded by how strongly each control holds. Read it before changing a boundary: it names where each property is enforced and which test asserts it
 
-The remaining documents in `docs/` are the conceptual design set. They are consistent with the decisions but are background rather than instructions.
+The remaining documents are the conceptual design set. They are consistent with the decisions but are background rather than instructions.
 
 ### Conventions
 - **Cite decision identifiers.** When code or a commit implements a decision, reference it as `D7`, `D18`, and so on. When a comment explains why a boundary exists, cite the decision rather than restating the rationale.
@@ -25,7 +39,11 @@ The remaining documents in `docs/` are the conceptual design set. They are consi
 - **Update the docs with the code.** A change to a boundary, schema, or policy semantics changes a document too. A decision reversed in code but not in `decisions.md` is worse than no decision log at all.
 
 ### Current state
-The repository contains design and implementation-planning documents only. No implementation code exists yet; Phase 0 is the next step. There is no flake yet — creating it is the first Phase 0 deliverable, which is why the tooling rules below cannot be verified against a working environment today.
+The MVP slice — Phases 0 through 4 — is implemented, and `rust.check` has now run once inside a real isolation boundary on the namespace backend; that first run found four bugs the suite could not see. It predates the builder / warden split: the document set has been reorganised around it, the code has not. The operator task surface ([D25](docs/builder/decisions.md#d25-task-execution-has-an-operator-surface-on-the-admin-socket)), posture reporting ([D26](docs/builder/decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)), and the materialisation mtime contract ([D27](docs/builder/decisions.md#d27-snapshot-materialisation-preserves-change-ordering-in-mtime)) are built.
+
+The microVM backend now has a guest side ([D24](docs/builder/decisions.md#d24-firecracker-is-the-default-backend-for-build-execution)): a flake-built kernel and erofs root images ([R12](docs/builder/decisions.md#r12-the-guest-root-image-is-uncompressed-erofs)), the `clyde-guest-api` job contract, `clyde-init`, block-image construction, and the vsock guest channel carrying all guest output ([R11](docs/builder/decisions.md#r11-all-guest-output-leaves-over-vsock)). **No test has booted a guest**, and no test spawns a sandbox on either backend. It is opt-in per run — an operator raises a task with `--isolation microvm` — because the vsock egress bridge, guest-side learn mode, and the raised policy floor are still to come. [The bring-up guide](docs/builder/microvm-bring-up.md) is the walkthrough.
+
+The [root README](README.md#status) states what has and has not been exercised.
 
 ## Tooling source of truth
 

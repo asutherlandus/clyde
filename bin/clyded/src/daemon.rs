@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use clyde_core::Redacted;
 use clyde_core::ids::LeaseId;
+use clyde_core::posture::Posture;
 use clyde_egress::ClydeCa;
 use clyde_egress::proxy::ProxyHandle;
 use clyde_git::GitRunner;
@@ -50,6 +51,12 @@ pub struct Daemon {
     pub content: ContentStore,
     pub bundles: BundleStore,
     pub host: HostReport,
+    /// The enforcement posture this deployment reports (D26).
+    ///
+    /// Derived at startup from the host and the configuration's `[agent]`
+    /// section, and never settable: there is no key that makes an advisory
+    /// deployment report as enforcing.
+    pub posture: Posture,
     pub git: GitRunner,
     pub broker: BrokerGateway,
     /// The model API credential, injected host-side by the proxy so the agent
@@ -123,16 +130,35 @@ impl Daemon {
             probe(&ProbePaths {
                 bwrap: config.sandbox.bwrap.clone(),
                 firecracker: config.sandbox.firecracker.clone(),
+                mke2fs: config.sandbox.mke2fs.clone(),
                 nix: None,
+                guest_vm_dir: Some(paths.root().join("vm")),
                 state_dir: Some(paths.root().to_path_buf()),
+                runtime_roots: config.sandbox.runtime_roots.clone(),
+                runtime_root_manifests: config.sandbox.runtime_root_manifests.clone(),
             })
         });
+
+        // Posture is derived here and nowhere else. The `[agent]` section is the
+        // observable fact "Clyde hosts the actor": its absence is what makes a
+        // deployment builder-only (D23), so it is also what makes the driver's
+        // environment the host's rather than Clyde's.
+        let posture = clyde_core::posture::derive(&clyde_sandbox::capability::observe_posture(
+            config.agent.command.is_some(),
+        ));
 
         let ca = Arc::new(ClydeCa::load_or_create(&paths.ca())?);
         let content = ContentStore::open(paths.snapshots())?;
         let bundles = BundleStore::open(paths.deps())?;
-        let runtime_roots =
-            RuntimeRoots::from_paths(&config.sandbox.runtime_roots, None).unwrap_or_default();
+        // The manifest directory is what makes a root's *closure* bindable. A
+        // `buildEnv` root is a tree of symlinks into other store paths, so
+        // binding the root alone leaves every binary dangling inside the sandbox
+        // (D6).
+        let runtime_roots = RuntimeRoots::from_paths(
+            &config.sandbox.runtime_roots,
+            config.sandbox.runtime_root_manifests.as_deref(),
+        )
+        .unwrap_or_default();
         let git = GitRunner::discover()?;
         let broker = BrokerGateway::new(
             config
@@ -174,6 +200,7 @@ impl Daemon {
             content,
             bundles,
             host,
+            posture,
             git,
             broker,
             model_api_credential,
@@ -246,13 +273,22 @@ fn build_backends(config: &Config, host: &HostReport, paths: &StatePaths) -> Bac
         config.sandbox.firecracker.as_deref(),
         "firecracker",
     ) {
-        registry = registry.with(Arc::new(FirecrackerBackend::new(FirecrackerConfig {
-            firecracker,
-            kernel: paths.root().join("vm/vmlinux"),
-            rootfs_dir: paths.root().join("vm/rootfs"),
-            runtime_dir: paths.sandbox_runtime(),
-            vsock_dir: paths.run().join("vsock"),
-        })));
+        // Without `mke2fs` there is no way to build a guest image, so the backend
+        // is not registered at all rather than registered and failing at the
+        // first task: an unregistered backend is what `clyde doctor` and the
+        // selection refusal already know how to explain.
+        if let Some(mke2fs) =
+            clyde_sandbox::capability::resolve_program(config.sandbox.mke2fs.as_deref(), "mke2fs")
+        {
+            registry = registry.with(Arc::new(FirecrackerBackend::new(FirecrackerConfig {
+                firecracker,
+                mke2fs,
+                kernel: paths.root().join("vm/vmlinux"),
+                rootfs_dir: paths.root().join("vm/rootfs"),
+                runtime_dir: paths.sandbox_runtime(),
+                vsock_dir: paths.run().join("vsock"),
+            })));
+        }
     }
     registry
 }

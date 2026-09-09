@@ -104,4 +104,4 @@ jobs:
         run: |
           echo "CI asserts sandbox properties over specifications, not over running sandboxes."
           echo "Executing them needs unprivileged user namespaces (bubblewrap) or KVM (Firecracker),"
-          echo "neither of which a hosted runner reliably provides. See docs/phase-2-execution-and-isolation.md."
+          echo "neither of which a hosted runner reliably provides. See docs/builder/roadmap.md."

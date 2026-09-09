@@ -20,6 +20,8 @@ pub mod bubblewrap;
 pub mod capability;
 pub mod error;
 pub mod firecracker;
+pub mod guest_channel;
+pub mod images;
 pub mod limits;
 pub mod registry;
 pub mod runtime_root;

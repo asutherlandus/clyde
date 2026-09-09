@@ -9,9 +9,15 @@
 //! - "no cgroup v2" versus "cgroup v2 present but not delegated" versus
 //!   "delegated but missing controllers"
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use clyde_core::posture::PostureObservation;
+
 use clyde_core::classification::IsolationLevel;
+use clyde_core::task::RuntimeRootKind;
+
+use crate::runtime_root::RuntimeRoot;
 
 /// The state of one host prerequisite.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -52,9 +58,25 @@ pub struct HostReport {
     pub user_namespaces: Capability,
     pub cgroup_v2: Capability,
     pub cgroup_delegation: Capability,
+    /// Whether the `systemd-run --user` wrapper can reach the per-user manager.
+    ///
+    /// Separate from `cgroup_delegation`, which asks whether a delegated subtree
+    /// is writable. Both must hold: a writable subtree with no reachable bus
+    /// still means every build task dies before `bwrap` starts.
+    pub session_bus: Capability,
+    /// Whether each configured runtime root's programs resolve once bound.
+    pub runtime_roots: Capability,
     pub kvm: Capability,
     pub bubblewrap: Capability,
     pub firecracker: Capability,
+    /// `mke2fs`, which the microVM backend needs to build every guest image.
+    pub mke2fs: Capability,
+    /// Whether the guest kernel and root images the flake builds are in place.
+    ///
+    /// Reported separately from `firecracker` because they fail differently: a
+    /// missing binary is an install step, and a missing image is a `nix build`
+    /// plus a symlink.
+    pub guest_images: Capability,
     pub nix: Capability,
     pub hardlinks: Capability,
     /// Known limitations, stated plainly so they are discovered before a
@@ -75,8 +97,42 @@ impl HostReport {
     ///
     /// Cgroup v2 delegation is mandatory; without it build tasks are refused,
     /// with no opt-in and no fallback (D22).
+    ///
+    /// The session bus counts: the wrapper chain starts with `systemd-run --user`,
+    /// so a host with a delegated subtree it cannot reach still refuses every
+    /// build task, and reporting `ok` here would be a lie the first run exposes.
     pub fn can_run_build(&self) -> bool {
-        self.can_run_workspace() && self.cgroup_delegation.is_available()
+        self.can_run_workspace()
+            && self.cgroup_delegation.is_available()
+            && self.session_bus.is_available()
+    }
+
+    /// The unsatisfied workspace prerequisites, each named.
+    pub fn workspace_blockers(&self) -> Vec<(&'static str, &Capability)> {
+        [
+            ("user namespaces", &self.user_namespaces),
+            ("bubblewrap", &self.bubblewrap),
+        ]
+        .into_iter()
+        .filter(|(_, capability)| !capability.is_available())
+        .collect()
+    }
+
+    /// The unsatisfied build prerequisites, each named.
+    ///
+    /// Build inherits every workspace prerequisite, so a blocked user namespace
+    /// refuses build tasks on its own. Naming the failing one matters: a report
+    /// that always blames delegation sends the operator to the D22 remedy for a
+    /// host whose delegation is fine.
+    pub fn build_blockers(&self) -> Vec<(&'static str, &Capability)> {
+        let mut blockers = self.workspace_blockers();
+        if !self.cgroup_delegation.is_available() {
+            blockers.push(("cgroup delegation", &self.cgroup_delegation));
+        }
+        if !self.session_bus.is_available() {
+            blockers.push(("session bus", &self.session_bus));
+        }
+        blockers
     }
 
     /// Whether the host can run microVM tasks (Phase 2b).
@@ -109,9 +165,17 @@ impl HostReport {
 pub struct ProbePaths {
     pub bwrap: Option<PathBuf>,
     pub firecracker: Option<PathBuf>,
+    pub mke2fs: Option<PathBuf>,
     pub nix: Option<PathBuf>,
+    /// The guest image directory, normally `<state-dir>/vm`.
+    pub guest_vm_dir: Option<PathBuf>,
     /// Directory used for the hardlink probe; the daemon's state directory.
     pub state_dir: Option<PathBuf>,
+    /// The configured runtime roots, so the probe can check that what a task
+    /// would exec actually resolves inside the closure the sandbox binds.
+    pub runtime_roots: BTreeMap<RuntimeRootKind, PathBuf>,
+    /// The `runtimeRootManifests` directory, which is what supplies the closure.
+    pub runtime_root_manifests: Option<PathBuf>,
 }
 
 /// Probes every host prerequisite.
@@ -120,15 +184,22 @@ pub struct ProbePaths {
 /// requires privilege.
 pub fn probe(paths: &ProbePaths) -> HostReport {
     let enclosure = detect_enclosure();
+    // Resolved once: the userns verdict is about this exact path, because
+    // AppArmor attaches policy by executable path.
+    let bwrap = resolve_program(paths.bwrap.as_deref(), "bwrap");
     HostReport {
-        user_namespaces: probe_user_namespaces(&enclosure),
+        user_namespaces: probe_user_namespaces(&enclosure, bwrap.as_deref()),
         cgroup_v2: probe_cgroup_v2(),
         cgroup_delegation: classify_cgroup_delegation(&observe_cgroups(enclosure.clone())),
+        session_bus: probe_session_bus(&enclosure),
+        runtime_roots: probe_runtime_roots(
+            &paths.runtime_roots,
+            paths.runtime_root_manifests.as_deref(),
+        ),
         kvm: classify_kvm(&observe_kvm(enclosure)),
-        bubblewrap: probe_program(
+        bubblewrap: classify_resolved(
             "bubblewrap",
-            paths.bwrap.as_deref(),
-            "bwrap",
+            bwrap.as_deref(),
             "add `bubblewrap` to the flake devShell, or set sandbox.bwrap in host configuration",
         ),
         firecracker: probe_program(
@@ -137,6 +208,13 @@ pub fn probe(paths: &ProbePaths) -> HostReport {
             "firecracker",
             "install firecracker and set sandbox.firecracker in host configuration; without it, microVM tasks are refused",
         ),
+        mke2fs: probe_program(
+            "mke2fs",
+            paths.mke2fs.as_deref(),
+            "mke2fs",
+            "add `e2fsprogs` to the flake devShell, or set sandbox.mke2fs in host configuration; the microVM backend builds every guest image with it",
+        ),
+        guest_images: probe_guest_images(paths.guest_vm_dir.as_deref()),
         nix: probe_program(
             "nix",
             paths.nix.as_deref(),
@@ -233,7 +311,13 @@ pub fn known_limitations() -> Vec<String> {
 /// The Ubuntu 24.04 case: `bwrap` exists and user namespaces are enabled in the
 /// kernel, but AppArmor blocks unprivileged userns for binaries without a
 /// permitting profile — which includes anything in the nix store.
-fn probe_user_namespaces(enclosure: &Enclosure) -> Capability {
+///
+/// The sysctl alone cannot answer this. A profile permitting one binary leaves
+/// the sysctl at `1`, because the restriction stays on host-wide and the
+/// profile is an exception to it, so inferring a verdict from the sysctl
+/// reports the recommended remedy as still-unapplied forever. When a `bwrap` is
+/// known, the question is settled by running it.
+fn probe_user_namespaces(enclosure: &Enclosure, bwrap: Option<&Path>) -> Capability {
     let max = read_sysctl("/proc/sys/user/max_user_namespaces")
         .and_then(|text| text.trim().parse::<u64>().ok());
     if max == Some(0) {
@@ -246,18 +330,35 @@ fn probe_user_namespaces(enclosure: &Enclosure) -> Capability {
         .map(|text| text.trim() == "1")
         .unwrap_or(false);
     if apparmor_restricted {
-        // The sysctl and the policy both belong to the host kernel, so inside a
-        // container neither the profile nor the sysctl can be changed from
-        // here — worth saying, because both remedies look actionable.
-        let mut remedy = "install an AppArmor profile granting `userns create` for the nix-store bwrap path (narrowest, survives reboot); or `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which re-enables unprivileged userns for everything on the host".to_owned();
-        if enclosure.is_container() {
-            remedy.push_str(
-                ". Both apply to the host kernel, not to this container, so neither can be done from in here",
-            );
+        // Only this binary's verdict matters: it is the one Clyde will execute,
+        // and AppArmor attaches policy by executable path.
+        if let Some(path) = bwrap {
+            match bwrap_can_unshare(path) {
+                Some(true) => {
+                    return Capability::Available {
+                        detail: format!(
+                            "{} can create a user namespace under kernel.apparmor_restrict_unprivileged_userns=1, so a profile permits it",
+                            path.display()
+                        ),
+                    };
+                }
+                Some(false) => {
+                    return Capability::Blocked {
+                        detail: format!(
+                            "kernel.apparmor_restrict_unprivileged_userns=1 and {} could not create a user namespace, so no AppArmor profile permits it",
+                            path.display()
+                        ),
+                        remedy: apparmor_remedy(enclosure),
+                    };
+                }
+                // Could not be run at all: fall through to the sysctl reading,
+                // which is a weaker claim and says so.
+                None => {}
+            }
         }
         return Capability::Blocked {
-            detail: "kernel.apparmor_restrict_unprivileged_userns=1 blocks unprivileged user namespaces for binaries without a permitting AppArmor profile, which includes a nix-store bwrap".to_owned(),
-            remedy,
+            detail: "kernel.apparmor_restrict_unprivileged_userns=1 blocks unprivileged user namespaces for binaries without a permitting AppArmor profile, which includes a nix-store bwrap; no bwrap could be run to confirm whether one permits it here".to_owned(),
+            remedy: apparmor_remedy(enclosure),
         };
     }
     match max {
@@ -269,6 +370,49 @@ fn probe_user_namespaces(enclosure: &Enclosure) -> Capability {
             remedy: "run on a Linux host with user namespace support; Clyde is Linux-first".to_owned(),
         },
     }
+}
+
+fn apparmor_remedy(enclosure: &Enclosure) -> String {
+    // The sysctl and the policy both belong to the host kernel, so inside a
+    // container neither the profile nor the sysctl can be changed from here —
+    // worth saying, because both remedies look actionable.
+    let mut remedy = "install an AppArmor profile granting `userns create` for the nix-store bwrap path (narrowest, survives reboot); or `sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which re-enables unprivileged userns for everything on the host".to_owned();
+    if enclosure.is_container() {
+        remedy.push_str(
+            ". Both apply to the host kernel, not to this container, so neither can be done from in here",
+        );
+    }
+    remedy
+}
+
+/// Runs the real thing: the smallest namespace `bwrap` can be asked for.
+///
+/// `None` when the answer is not the host's — the binary could not be spawned,
+/// or there is no payload to hand it — so the caller does not read a broken
+/// probe as a denial.
+fn bwrap_can_unshare(bwrap: &Path) -> Option<bool> {
+    let payload = resolve_program(None, "true").or_else(|| {
+        let fallback = PathBuf::from("/bin/true");
+        fallback.is_file().then_some(fallback)
+    })?;
+    let status = std::process::Command::new(bwrap)
+        .args([
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--ro-bind",
+            "/",
+            "/",
+        ])
+        .arg(&payload)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    Some(status.success())
 }
 
 fn probe_cgroup_v2() -> Capability {
@@ -431,7 +575,7 @@ pub fn classify_cgroup_delegation(observed: &CgroupObservation) -> Capability {
             "no service manager is running to delegate a subtree; start one, or run clyded where systemd manages the session. Build tasks are refused without delegation (D22)"
         }
         Enclosure::Host => {
-            "run under a systemd user session with Delegate=yes (`systemctl --user show user@$(id -u).service -p Delegate`); a non-login session needs `loginctl enable-linger $USER`. Build tasks are refused without delegation (D22)"
+            "run under a systemd user session with Delegate=yes (`systemctl show user@$(id -u).service -p Delegate`); a non-login session needs `loginctl enable-linger $USER`. Build tasks are refused without delegation (D22)"
         }
     };
     Capability::Blocked {
@@ -567,13 +711,151 @@ pub fn classify_kvm(observed: &KvmObservation) -> Capability {
     }
 }
 
+/// Whether `systemd-run --user` could reach the per-user manager.
+///
+/// A build task's wrapper chain starts with `systemd-run --user --scope`, and
+/// the sandbox spawn clears the environment down to what that needs. libsystemd
+/// resolves the user bus from `DBUS_SESSION_BUS_ADDRESS`, else from
+/// `$XDG_RUNTIME_DIR/bus`; with neither it fails `Failed to connect to bus: No
+/// medium found` and exits before `bwrap` runs. Inspection only — the variables
+/// are read from this process, which is the environment that gets forwarded.
+fn probe_session_bus(enclosure: &Enclosure) -> Capability {
+    if let Some(address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") {
+        return Capability::Available {
+            detail: format!(
+                "user bus at {} (DBUS_SESSION_BUS_ADDRESS)",
+                address.to_string_lossy()
+            ),
+        };
+    }
+    let remedy = if enclosure.is_container() {
+        "this environment has no user session bus, and nothing inside it can create one: \
+         run clyded on the host, or under a systemd user manager"
+            .to_owned()
+    } else {
+        "start clyded inside a login session — `systemctl --user` or a terminal — rather than \
+         as a system unit or under sudo, and `loginctl enable-linger $USER` so the manager \
+         survives logout"
+            .to_owned()
+    };
+    match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
+        Some(dir) if dir.join("bus").exists() => Capability::Available {
+            detail: format!("user bus at {}", dir.join("bus").display()),
+        },
+        Some(dir) => Capability::Blocked {
+            detail: format!(
+                "XDG_RUNTIME_DIR is {} but {} does not exist, so systemd-run --user has no bus \
+                 to reach and every build task fails before bwrap starts",
+                dir.display(),
+                dir.join("bus").display()
+            ),
+            remedy,
+        },
+        None => Capability::Unavailable {
+            detail: "neither DBUS_SESSION_BUS_ADDRESS nor XDG_RUNTIME_DIR is set, so \
+                     systemd-run --user cannot resolve the per-user manager and every build \
+                     task fails before bwrap starts"
+                .to_owned(),
+            remedy,
+        },
+    }
+}
+
+/// Whether each configured runtime root's programs survive being bound.
+///
+/// A runtime root is a `buildEnv`: a tree of symlinks into other store paths. A
+/// program in it resolves on the host whatever the closure says, and resolves
+/// *inside the sandbox* only if what it points at is bound too. When the closure
+/// is just the root — which is what a missing manifest directory yields — every
+/// binary dangles and the only diagnostic is an `execvp` ENOENT naming the
+/// program rather than the configuration.
+fn probe_runtime_roots(
+    configured: &BTreeMap<RuntimeRootKind, PathBuf>,
+    manifests: Option<&Path>,
+) -> Capability {
+    if configured.is_empty() {
+        return Capability::Unavailable {
+            detail: "no runtime roots are configured".to_owned(),
+            remedy: "set sandbox.runtime_root_workspace, runtime_root_rust, and \
+                     runtime_root_fetch in host configuration; a task executes against exactly \
+                     one runtime root (D6)"
+                .to_owned(),
+        };
+    }
+    let remedy = "build the closure manifests and name them as \
+                  sandbox.runtime_root_manifests: `nix build .#runtimeRootManifests`. Without \
+                  them a root's closure is taken to be the root alone"
+        .to_owned();
+
+    let mut summaries = Vec::new();
+    for (kind, path) in configured {
+        let root = match RuntimeRoot::read(*kind, path, manifests) {
+            Ok(root) => root,
+            Err(error) => {
+                return Capability::Blocked {
+                    detail: format!(
+                        "the {} runtime root at {}: {error}",
+                        kind.name(),
+                        path.display()
+                    ),
+                    remedy: format!(
+                        "check sandbox.runtime_root_{} in host configuration, and that the store \
+                         path still exists — add a GC root so nix-collect-garbage cannot remove it",
+                        kind.name()
+                    ),
+                };
+            }
+        };
+        let dangling: Vec<&String> = root
+            .binaries
+            .iter()
+            .filter(|name| {
+                root.program(name)
+                    .is_none_or(|program| !root.resolves_inside_sandbox(&program))
+            })
+            .collect();
+        if let Some(first) = dangling.first() {
+            return Capability::Blocked {
+                detail: format!(
+                    "{} of {} programs in the {} runtime root would not resolve inside the \
+                     sandbox, because they point outside the {} store path(s) its closure binds \
+                     — {} is the first",
+                    dangling.len(),
+                    root.binaries.len(),
+                    kind.name(),
+                    root.closure.len(),
+                    first
+                ),
+                remedy,
+            };
+        }
+        summaries.push(format!(
+            "{}: {} programs, {} store paths",
+            kind.name(),
+            root.binaries.len(),
+            root.closure.len()
+        ));
+    }
+    Capability::Available {
+        detail: format!("closures bound — {}", summaries.join("; ")),
+    }
+}
+
 fn probe_program(
     name: &'static str,
     configured: Option<&Path>,
     program: &str,
     remedy: &str,
 ) -> Capability {
-    match resolve_program(configured, program) {
+    classify_resolved(
+        name,
+        resolve_program(configured, program).as_deref(),
+        remedy,
+    )
+}
+
+fn classify_resolved(name: &'static str, path: Option<&Path>, remedy: &str) -> Capability {
+    match path {
         Some(path) => Capability::Available {
             detail: format!("{name} at {}", path.display()),
         },
@@ -581,6 +863,30 @@ fn probe_program(
             detail: format!("{name} was not found on PATH or in configuration"),
             remedy: remedy.to_owned(),
         },
+    }
+}
+
+/// The project build programs whose presence on `PATH` is a bypass (D26).
+///
+/// A driver that can reach any of these can build project code without going
+/// through a typed task, which is precisely what makes the pipeline advisory.
+const TOOLCHAIN_PROGRAMS: [&str; 3] = ["cargo", "rustc", "rustup"];
+
+/// Observes what posture is derived from.
+///
+/// Observation only: the classification is [`clyde_core::posture::derive`], a
+/// pure function, so the cases worth diagnosing — a host with no toolchain in
+/// particular — are testable on a machine that has one.
+pub fn observe_posture(hosts_the_actor: bool) -> PostureObservation {
+    PostureObservation {
+        toolchain_on_path: TOOLCHAIN_PROGRAMS
+            .into_iter()
+            .filter_map(|program| {
+                resolve_program(None, program)
+                    .map(|path| format!("{program} at {}", path.display()))
+            })
+            .collect(),
+        hosts_the_actor,
     }
 }
 
@@ -622,7 +928,7 @@ fn probe_hardlinks(state_dir: Option<&Path>) -> Capability {
         },
         Err(error) => Capability::Blocked {
             detail: format!("hardlinks are unavailable on {}: {error}", dir.display()),
-            remedy: "snapshots will fall back to copying, which is slower but correct".to_owned(),
+            remedy: "snapshots fall back to copying, which costs the tree's bytes per run but stays correct and stays incremental: the copy carries the blob's mtime, so a build tool still sees unchanged files as unchanged (D27)".to_owned(),
         },
     };
     let _ = std::fs::remove_file(&source);
@@ -633,6 +939,50 @@ fn probe_hardlinks(state_dir: Option<&Path>) -> Capability {
 fn read_sysctl(path: &str) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
+
+/// Whether the guest kernel and root images are where the backend expects them.
+///
+/// A separate probe from `firecracker` because the remedy is different in kind:
+/// a missing binary is an install step, a missing image is a `nix build` and a
+/// symlink. Reporting both as "microVM unavailable" would send an operator to
+/// the wrong one (R10).
+fn probe_guest_images(vm_dir: Option<&Path>) -> Capability {
+    let Some(directory) = vm_dir else {
+        return Capability::Unavailable {
+            detail: "no guest image directory was configured".to_owned(),
+            remedy: GUEST_IMAGE_REMEDY.to_owned(),
+        };
+    };
+
+    let kernel = directory.join("vmlinux");
+    if !kernel.is_file() {
+        return Capability::Unavailable {
+            detail: format!("no guest kernel at {}", kernel.display()),
+            remedy: GUEST_IMAGE_REMEDY.to_owned(),
+        };
+    }
+
+    let rootfs = directory.join("rootfs");
+    let missing: Vec<&str> = ["workspace", "rust", "fetch"]
+        .into_iter()
+        .filter(|kind| !rootfs.join(format!("{kind}.img")).is_file())
+        .collect();
+    if missing.is_empty() {
+        Capability::Available {
+            detail: format!("guest kernel and root images under {}", directory.display()),
+        }
+    } else {
+        Capability::Unavailable {
+            detail: format!(
+                "guest kernel present, but no root image for: {}",
+                missing.join(", ")
+            ),
+            remedy: GUEST_IMAGE_REMEDY.to_owned(),
+        }
+    }
+}
+
+const GUEST_IMAGE_REMEDY: &str = "build them from the flake and link them into the state directory: `nix build .#guestVm` then `ln -s \"$(readlink -f result)\" <state-dir>/vm`";
 
 #[cfg(test)]
 mod tests {
@@ -667,9 +1017,13 @@ mod tests {
             user_namespaces: userns,
             cgroup_v2: available(),
             cgroup_delegation: delegation,
+            session_bus: available(),
+            runtime_roots: available(),
             kvm,
             bubblewrap: available(),
             firecracker,
+            mke2fs: available(),
+            guest_images: available(),
             nix: available(),
             hardlinks: available(),
             known_limitations: Vec::new(),
@@ -688,6 +1042,39 @@ mod tests {
             "build tasks are refused without delegation, with no fallback (D22)"
         );
         assert!(!report.policy_view().cgroup_delegation);
+    }
+
+    #[test]
+    fn a_blocked_prerequisite_is_named_rather_than_blamed_on_delegation() {
+        // The regression: build inherits the workspace prerequisites, so a
+        // report that always names delegation tells an operator whose
+        // delegation is fine to go and fix delegation, citing D22 for a
+        // refusal D22 had no part in.
+        let report = report(unavailable(), available(), available(), available());
+        assert!(!report.can_run_build());
+        let named: Vec<_> = report
+            .build_blockers()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(named, ["user namespaces"], "{named:?}");
+    }
+
+    #[test]
+    fn delegation_is_named_when_it_is_the_one_that_failed() {
+        let report = report(available(), unavailable(), available(), available());
+        let named: Vec<_> = report
+            .build_blockers()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(named, ["cgroup delegation"], "{named:?}");
+    }
+
+    #[test]
+    fn a_host_that_can_build_has_no_blockers() {
+        let report = report(available(), available(), available(), available());
+        assert!(report.build_blockers().is_empty());
     }
 
     #[test]
@@ -779,6 +1166,93 @@ mod tests {
         Enclosure::Container {
             evidence: "PID 1 is `tini`".to_owned(),
         }
+    }
+
+    #[test]
+    fn a_runtime_root_whose_programs_point_outside_its_closure_is_blocked() {
+        // A `buildEnv` in miniature: the root is symlinks into a store path the
+        // closure does not name, which is what a missing manifest directory
+        // produces and what fails as `bwrap: execvp …: No such file or directory`.
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store/cargo-1.97.1/bin");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("cargo"), b"#!/bin/sh\n").unwrap();
+        let root = dir.path().join("roots/rust");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::os::unix::fs::symlink(store.join("cargo"), root.join("bin/cargo")).unwrap();
+
+        let configured = [(RuntimeRootKind::Rust, root.clone())]
+            .into_iter()
+            .collect();
+        let capability = probe_runtime_roots(&configured, None);
+        let detail = capability.detail().to_owned();
+        assert!(
+            matches!(capability, Capability::Blocked { .. }),
+            "a dangling program must block rather than read as available: {detail}"
+        );
+        assert!(
+            detail.contains("cargo"),
+            "the failing program is named: {detail}"
+        );
+        assert!(
+            capability
+                .remedy()
+                .is_some_and(|remedy| remedy.contains("runtime_root_manifests")),
+            "the remedy must name the key that fixes it"
+        );
+
+        // With a manifest naming the store path, the same root is fine.
+        let manifests = dir.path().join("manifests/rust");
+        std::fs::create_dir_all(&manifests).unwrap();
+        std::fs::write(
+            manifests.join("store-paths"),
+            format!(
+                "{}\n{}",
+                root.display(),
+                dir.path().join("store/cargo-1.97.1").display()
+            ),
+        )
+        .unwrap();
+        assert!(
+            probe_runtime_roots(&configured, Some(&dir.path().join("manifests"))).is_available(),
+            "naming the closure is what makes the root usable"
+        );
+    }
+
+    #[test]
+    fn no_configured_runtime_roots_is_unavailable_rather_than_silently_fine() {
+        let capability = probe_runtime_roots(&BTreeMap::new(), None);
+        assert!(!capability.is_available());
+        assert!(
+            capability
+                .remedy()
+                .is_some_and(|r| r.contains("runtime_root_rust"))
+        );
+    }
+
+    #[test]
+    fn build_capability_requires_a_reachable_session_bus() {
+        // A delegated subtree the wrapper cannot reach is still no build host:
+        // `systemd-run --user` fails before bwrap starts.
+        let mut host = report(available(), available(), available(), available());
+        host.session_bus = Capability::Unavailable {
+            detail: "no bus".to_owned(),
+            remedy: "start clyded in a login session".to_owned(),
+        };
+        assert!(
+            !host.can_run_build(),
+            "reporting ok here would be a lie the first run exposes"
+        );
+        assert!(
+            host.build_blockers()
+                .iter()
+                .any(|(label, _)| *label == "session bus"),
+            "the blocker must be named, not folded into delegation"
+        );
+        assert!(
+            host.can_run_workspace(),
+            "the workspace environment gets no cgroup scope and needs no bus"
+        );
     }
 
     #[test]
@@ -923,22 +1397,45 @@ mod tests {
 
     #[test]
     fn the_apparmor_remedy_says_it_cannot_be_applied_from_inside_a_container() {
-        // Only meaningful on a host that actually sets the sysctl; elsewhere the
-        // probe returns a different variant and there is nothing to assert.
+        // The remedy is a pure function of the enclosure, so this holds on every
+        // host rather than only on one that sets the sysctl.
+        let inside = apparmor_remedy(&container());
+        assert!(
+            inside.contains("host kernel"),
+            "the profile and the sysctl both belong to the host: {inside}"
+        );
+        assert!(!apparmor_remedy(&Enclosure::Host).contains("host kernel"));
+    }
+
+    #[test]
+    fn a_bwrap_that_cannot_be_run_is_not_read_as_a_denial() {
+        // The empirical probe answers "not the host's answer" rather than
+        // "denied" when it cannot run, so a missing binary never masquerades as
+        // an AppArmor refusal.
+        assert_eq!(bwrap_can_unshare(Path::new("/nonexistent/bwrap")), None);
+    }
+
+    #[test]
+    fn a_permitting_profile_leaves_the_sysctl_set_so_the_sysctl_cannot_decide() {
+        // The regression this guards: a profile permitting one binary leaves
+        // kernel.apparmor_restrict_unprivileged_userns=1, so a verdict inferred
+        // from the sysctl reports the applied remedy as still outstanding
+        // forever. With no bwrap to run, the fallback must say the weaker claim
+        // is what it is.
         let restricted = read_sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
             .map(|text| text.trim() == "1")
             .unwrap_or(false);
         if !restricted {
             return;
         }
-        let inside = probe_user_namespaces(&container());
-        let remedy = inside.remedy().unwrap();
+        let unconfirmable = probe_user_namespaces(&Enclosure::Host, None);
         assert!(
-            remedy.contains("host kernel"),
-            "the profile and the sysctl both belong to the host: {remedy}"
+            unconfirmable
+                .detail()
+                .contains("no bwrap could be run to confirm"),
+            "an unconfirmed verdict must not read as a confirmed denial: {}",
+            unconfirmable.detail()
         );
-        let on_host = probe_user_namespaces(&Enclosure::Host);
-        assert!(!on_host.remedy().unwrap().contains("host kernel"));
     }
 
     #[test]

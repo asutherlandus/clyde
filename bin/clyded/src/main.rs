@@ -153,19 +153,32 @@ async fn run(options: Options) -> clyded::Result<()> {
 /// Stated up front rather than discovered through a confusing failure later.
 fn report_readiness(daemon: &Arc<Daemon>) {
     let host = &daemon.host;
-    if !host.can_run_workspace() {
+    // Each unsatisfied prerequisite is named with its own remedy. Reporting a
+    // fixed capability regardless of which one failed points the operator at
+    // the wrong remedy, and at a decision that is not the cause.
+    for (prerequisite, capability) in host.workspace_blockers() {
         tracing::warn!(
-            detail = host.user_namespaces.detail(),
-            remedy = host.user_namespaces.remedy().unwrap_or(""),
+            prerequisite,
+            detail = capability.detail(),
+            remedy = capability.remedy().unwrap_or(""),
             "the workspace environment cannot start on this host"
         );
     }
     if !host.can_run_build() {
-        tracing::warn!(
-            detail = host.cgroup_delegation.detail(),
-            remedy = host.cgroup_delegation.remedy().unwrap_or(""),
-            "build and test tasks will be refused on this host (D22)"
-        );
+        if host.can_run_workspace() {
+            tracing::warn!(
+                prerequisite = "cgroup delegation",
+                detail = host.cgroup_delegation.detail(),
+                remedy = host.cgroup_delegation.remedy().unwrap_or(""),
+                "build and test tasks will be refused on this host (D22)"
+            );
+        } else {
+            // The workspace warnings above carry the remedies; repeating them
+            // here would suggest there is a second thing to fix.
+            tracing::warn!(
+                "build and test tasks will be refused on this host: they inherit the workspace prerequisites above"
+            );
+        }
     }
     if !host.can_run_microvm() {
         tracing::info!(

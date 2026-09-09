@@ -117,6 +117,11 @@ pub struct TaskRunView {
     /// The digest of the policy actually applied, so "which policy ran" is
     /// answerable from the result rather than inferred.
     pub policy_digest: String,
+    /// The posture the run happened under (D26), so a result never has to be
+    /// read against today's posture rather than the one in force at the time.
+    pub posture: String,
+    /// Who actually asked, as opposed to the lease's actor (D25).
+    pub principal: String,
     pub backend: String,
     pub snapshot: Option<String>,
     pub dependency_bundle: Option<String>,
@@ -133,6 +138,8 @@ impl TaskRunView {
         Self {
             task_run: run.id.to_string(),
             task: run.request.task.name().to_owned(),
+            posture: run.posture.name().to_owned(),
+            principal: run.request.principal.kind_name().to_owned(),
             state: run.state.to_string(),
             policy_digest: run.policy_digest.to_string(),
             backend: run.backend.to_string(),

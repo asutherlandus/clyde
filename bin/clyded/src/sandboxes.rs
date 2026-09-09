@@ -218,6 +218,14 @@ pub struct BuildSandbox<'a> {
     pub argv: Vec<String>,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    /// An operator's request for *stronger* isolation than the policy floor
+    /// (D25).
+    ///
+    /// It can only raise. `min_isolation` is a floor and asking for more than
+    /// the floor is always safe, so this needs no exception to the no-downgrade
+    /// rule ([D9](../../docs/builder/decisions.md), D24) — a request for less is
+    /// refused before it reaches here.
+    pub isolation_floor: Option<IsolationLevel>,
 }
 
 /// Builds a build or fetch sandbox specification.
@@ -310,7 +318,14 @@ pub fn build_sandbox(input: &BuildSandbox<'_>) -> SandboxSpec {
         egress: input.policy.egress.clone(),
         limits: input.policy.limits,
         trust_class: input.policy.trust_class,
-        min_isolation: input.policy.min_isolation,
+        // The stronger of the policy's floor and an operator's request. `max`
+        // rather than "the request wins": a request for less than the floor
+        // cannot express itself here at all.
+        min_isolation: input
+            .isolation_floor
+            .map_or(input.policy.min_isolation, |requested| {
+                requested.max(input.policy.min_isolation)
+            }),
         env,
         argv: input.argv.clone(),
         cwd: PathBuf::from(inside::WORK),
@@ -587,6 +602,7 @@ mod tests {
             ],
             stdout_path: PathBuf::from("/var/lib/clyde/logs/tasks/t1/stdout"),
             stderr_path: PathBuf::from("/var/lib/clyde/logs/tasks/t1/stderr"),
+            isolation_floor: None,
         })
     }
 

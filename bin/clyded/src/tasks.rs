@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
+use clyde_core::actor::Principal;
 use clyde_core::artifact::ArtifactKind;
 use clyde_core::audit::AuditEventKind;
 use clyde_core::baseline::BaselineKey;
@@ -41,6 +42,17 @@ pub struct TaskContext {
     pub lease: Lease,
     pub workspace: Workspace,
     pub config: Config,
+    /// An operator's request for stronger isolation than the policy floor.
+    ///
+    /// Only the operator surface can set it, and it can only raise: an actor
+    /// has no way to name a backend, and a request below the policy floor is
+    /// refused rather than clamped.
+    pub isolation_floor: Option<clyde_core::classification::IsolationLevel>,
+    /// How the request that produced this context was authenticated (D25).
+    ///
+    /// It is recorded and never read by admission: the same request from either
+    /// surface resolves to the same policy and the same decision.
+    pub principal: Principal,
 }
 
 /// Admits and runs a task.
@@ -59,11 +71,14 @@ pub async fn run_task(
         lease: daemon.store.get_lease(&context.lease.id)?,
         workspace: context.workspace.clone(),
         config: context.config.clone(),
+        isolation_floor: context.isolation_floor,
+        principal: context.principal.clone(),
     };
     let request = TaskRequest {
         id: ids::new::task_run_id()?,
         lease: context.lease.id.clone(),
         actor: context.lease.actor.clone(),
+        principal: context.principal.clone(),
         task,
         path: path.clone(),
         options,
@@ -75,7 +90,16 @@ pub async fn run_task(
         daemon.store.as_ref(),
         audit::draft(
             AuditEventKind::TaskRequested { task },
-            serde_json::json!({"path": path.as_str()}),
+            serde_json::json!({
+                "path": path.as_str(),
+                // Who actually asked, which for an operator-driven run is not
+                // the lease's actor (D25).
+                "principal": context.principal.kind_name(),
+                "principal_detail": context.principal.to_string(),
+                // The posture the work actually happened under, so review does
+                // not have to assume today's posture applied yesterday (D26).
+                "posture": daemon.posture.name(),
+            }),
         )
         .mission(context.mission.id.clone())
         .lease(context.lease.id.clone())
@@ -205,6 +229,9 @@ pub async fn run_task(
         id: request.id.clone(),
         request: request.clone(),
         policy_digest,
+        // Recorded, and read by nothing above. Posture never participates in an
+        // admission decision (D26).
+        posture: daemon.posture.clone(),
         snapshot: None,
         dependency_bundle: None,
         backend: backend_kind,
@@ -605,7 +632,7 @@ async fn run_build(
         .snapshot(snapshot.snapshot.id.clone()),
     );
 
-    let argv = cargo_argv(request, policy)?;
+    let argv = cargo_argv(&cargo_program(daemon, policy)?, request, policy)?;
     execute_sandboxed(daemon, context, request, policy, &snapshot, argv, bundle).await
 }
 
@@ -625,6 +652,9 @@ async fn run_fetch(
         mission: context.mission.id.clone(),
         root: context.workspace.root.clone(),
         requested_path: RepoPath::root(),
+        // A fetch produces no compilation output, so nothing downstream compares
+        // these mtimes against anything (D27).
+        previous: None,
         grants: Vec::new(),
         pins: manifests,
         closure_paths: Vec::new(),
@@ -724,9 +754,17 @@ async fn execute_sandboxed(
         argv,
         stdout_path: stdout_path.clone(),
         stderr_path: stderr_path.clone(),
+        isolation_floor: context.isolation_floor,
     });
 
+    let isolation = spec.min_isolation;
     let backend = daemon.backends.select(&spec)?;
+    // The recorded backend is evidence, so it is written from the selection
+    // rather than assumed at admission: a run that happened in a microVM must
+    // not be recorded as having happened in a namespace sandbox.
+    daemon
+        .store
+        .set_task_run_backend(&request.id, backend.kind())?;
     daemon
         .store
         .transition_task_run(&request.id, TaskRunState::Preparing)?;
@@ -738,7 +776,16 @@ async fn execute_sandboxed(
         daemon.store.as_ref(),
         audit::draft(
             AuditEventKind::TaskStarted { task: request.task },
-            serde_json::json!({"backend": backend.kind().to_string()}),
+            serde_json::json!({
+                "backend": backend.kind().to_string(),
+                // The isolation the task actually ran at, and separately what an
+                // operator asked for, so a run at a raised floor is visible as a
+                // decision rather than inferred from the backend (D25).
+                "isolation": isolation.to_string(),
+                "isolation_requested": context
+                    .isolation_floor
+                    .map(|level| level.to_string()),
+            }),
         )
         .mission(context.mission.id.clone())
         .task_run(request.id.clone()),
@@ -964,10 +1011,17 @@ fn manifest_only_paths(root: &std::path::Path) -> Result<Vec<RepoPath>> {
 }
 
 /// The cargo argv for a build or test task.
-fn cargo_argv(request: &TaskRequest, policy: &clyde_core::task::TaskPolicy) -> Result<Vec<String>> {
-    let program = format!("{}/bin/cargo", "/nix/store/placeholder");
-    let _ = program;
-    let mut argv = vec!["cargo".to_owned()];
+///
+/// `program` is the absolute path to cargo inside the runtime root. It cannot be
+/// the bare name: the sandbox runs under `bwrap --clearenv`, so there is no
+/// `PATH` for `execvp` to search and a bare name fails with `No such file or
+/// directory` naming cargo rather than the misconfiguration.
+fn cargo_argv(
+    program: &str,
+    request: &TaskRequest,
+    policy: &clyde_core::task::TaskPolicy,
+) -> Result<Vec<String>> {
+    let mut argv = vec![program.to_owned()];
     match &request.options {
         TaskOptions::RustCheck {
             package,
@@ -1012,15 +1066,41 @@ fn cargo_argv(request: &TaskRequest, policy: &clyde_core::task::TaskPolicy) -> R
 }
 
 /// The cargo program inside the runtime root.
+///
+/// A root without a cargo is a host misconfiguration, and it is named here. The
+/// alternative — falling back to the bare name — defers the failure into the
+/// sandbox, where `--clearenv` leaves no `PATH` and the only diagnostic is
+/// `bwrap: execvp cargo: No such file or directory`, which reads as a missing
+/// toolchain rather than as the wrong runtime root.
 fn cargo_program(daemon: &Arc<Daemon>, policy: &clyde_core::task::TaskPolicy) -> Result<String> {
     let root = daemon
         .runtime_roots
         .get(policy.runtime_root)
         .ok_or_else(|| DaemonError::invalid("no runtime root is configured for this task"))?;
-    Ok(root
-        .program("cargo")
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(|| "cargo".to_owned()))
+    let program = root.program("cargo").ok_or_else(|| {
+        DaemonError::invalid(format!(
+            "the {} runtime root at {} has no bin/cargo; check sandbox.runtime_root_{} in host configuration",
+            policy.runtime_root.name(),
+            root.path.display(),
+            policy.runtime_root.name(),
+        ))
+    })?;
+    // Resolving on the host is not enough: the sandbox binds the closure, and a
+    // root built by `buildEnv` is symlinks into store paths the closure has to
+    // name. Caught here, this is one sentence; caught in the sandbox, it is an
+    // `execvp` ENOENT that points at cargo instead of at configuration.
+    if !root.resolves_inside_sandbox(&program) {
+        return Err(DaemonError::invalid(format!(
+            "{} resolves on the host but points outside the {} runtime root's bound closure, \
+             so it would not resolve inside the sandbox. The closure is {} path(s); set \
+             sandbox.runtime_root_manifests to the `nix build .#runtimeRootManifests` output \
+             so the whole closure is bound",
+            program.display(),
+            policy.runtime_root.name(),
+            root.closure.len(),
+        )));
+    }
+    Ok(program.to_string_lossy().to_string())
 }
 
 fn policy_digest_string(daemon: &Arc<Daemon>, id: &TaskRunId) -> String {
@@ -1078,6 +1158,10 @@ mod tests {
             id: ids::new::task_run_id().unwrap(),
             lease: ids::new::lease_id().unwrap(),
             actor: clyde_core::ids::ActorId::parse("agent:claude").unwrap(),
+            principal: Principal::Session {
+                session_actor: clyde_core::ids::ActorId::parse("agent:claude").unwrap(),
+                hosted: true,
+            },
             task,
             path: RepoPath::parse("crates/core").unwrap(),
             options,
@@ -1089,6 +1173,7 @@ mod tests {
     fn a_check_runs_frozen_so_a_missing_dependency_fails_rather_than_fetching() {
         let policy = clyde_policy::builtin_policy(TaskType::RustCheck);
         let argv = cargo_argv(
+            "/nix/store/rust-root/bin/cargo",
             &request(
                 TaskOptions::RustCheck {
                     package: Some("clyde-core".to_owned()),
@@ -1099,7 +1184,10 @@ mod tests {
             &policy,
         )
         .unwrap();
-        assert_eq!(argv[0], "cargo");
+        assert_eq!(
+            argv[0], "/nix/store/rust-root/bin/cargo",
+            "argv[0] must be the absolute path: the sandbox has no PATH to search"
+        );
         assert!(argv.contains(&"check".to_owned()));
         assert!(
             argv.contains(&"--frozen".to_owned()),
@@ -1117,6 +1205,7 @@ mod tests {
     fn a_unit_test_run_is_scoped_to_lib_and_bin_targets() {
         let policy = clyde_policy::builtin_policy(TaskType::RustTestUnit);
         let argv = cargo_argv(
+            "/nix/store/rust-root/bin/cargo",
             &request(
                 TaskOptions::RustTestUnit {
                     package: None,
@@ -1139,6 +1228,7 @@ mod tests {
         let policy = clyde_policy::builtin_policy(TaskType::GitCommitPrepare);
         assert!(
             cargo_argv(
+                "/nix/store/rust-root/bin/cargo",
                 &request(
                     TaskOptions::GitCommitPrepare {
                         message: "x".to_owned()

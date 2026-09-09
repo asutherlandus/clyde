@@ -7,10 +7,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::entities::actor::Principal;
 use crate::entities::classification::{
     ApprovalRequirement, AuditLevel, BackendKind, CachePolicy, CredentialPolicy, EgressProfile,
     Environment, InputSpec, IsolationLevel, OutputSpec, ResourceLimits, TrustClass,
 };
+use crate::entities::posture::Posture;
 use crate::error::{TransitionError, ValidationError};
 use crate::ids::{ActorId, ArtifactId, LeaseId, SnapshotId, TaskRunId};
 use crate::repo_path::RepoPath;
@@ -283,6 +285,12 @@ pub struct TaskRequest {
     pub id: TaskRunId,
     pub lease: LeaseId,
     pub actor: ActorId,
+    /// How this request was authenticated. Set by the daemon from the connection
+    /// it arrived on, never from a request field (D25).
+    ///
+    /// `actor` is the lease's actor — who the work is attributed to. This is who
+    /// actually asked, which for an operator-driven run is not the same value.
+    pub principal: Principal,
     pub task: TaskType,
     /// The build target or the path the task applies to.
     pub path: RepoPath,
@@ -308,6 +316,12 @@ impl TaskRequest {
         // The identifier and timestamp are excluded so that the same logical
         // request digests identically, and a *different* request cannot reuse an
         // approval.
+        //
+        // `principal` is excluded deliberately, and must stay excluded: the same
+        // request from an operator and from a session actor has to resolve to the
+        // same policy and the same decision, and only the record may differ
+        // (D25). Digesting it would make an approval unusable across the two
+        // surfaces, which is an admission difference wearing a digest's clothes.
         let normalised = serde_json::json!({
             "lease": self.lease.as_str(),
             "actor": self.actor.as_str(),
@@ -484,6 +498,14 @@ pub struct TaskRun {
     pub request: TaskRequest,
     /// Digest of the resolved policy actually applied.
     pub policy_digest: crate::digest::Digest,
+    /// The enforcement posture in force when this ran (D26).
+    ///
+    /// Recorded rather than reconstructed later, because posture is a property
+    /// of the moment: a deployment that gains the warden halfway through a
+    /// mission must not make the earlier work look as though it were enforced.
+    /// Set by the daemon, never by the requester, and read by nothing in
+    /// admission.
+    pub posture: Posture,
     pub snapshot: Option<SnapshotId>,
     pub dependency_bundle: Option<ArtifactId>,
     pub backend: BackendKind,
@@ -527,6 +549,10 @@ mod tests {
             id: crate::ids::new::task_run_id().unwrap(),
             lease: crate::ids::new::lease_id().unwrap(),
             actor: crate::ids::ActorId::parse("agent:claude").unwrap(),
+            principal: crate::entities::actor::Principal::Session {
+                session_actor: crate::ids::ActorId::parse("agent:claude").unwrap(),
+                hosted: true,
+            },
             task: TaskType::RustCheck,
             path: RepoPath::parse("crates/core").unwrap(),
             options: TaskOptions::RustTestUnit {
@@ -570,6 +596,10 @@ mod tests {
             id: crate::ids::new::task_run_id().unwrap(),
             lease: crate::ids::new::lease_id().unwrap(),
             actor: crate::ids::ActorId::parse("agent:claude").unwrap(),
+            principal: crate::entities::actor::Principal::Session {
+                session_actor: crate::ids::ActorId::parse("agent:claude").unwrap(),
+                hosted: true,
+            },
             task: TaskType::GitPush,
             path: RepoPath::root(),
             options: TaskOptions::GitPush {

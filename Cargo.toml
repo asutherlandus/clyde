@@ -14,10 +14,12 @@ members = [
     "crates/clyde-git",
     "crates/clyde-api",
     "crates/clyde-broker-api",
+    "crates/clyde-guest-api",
     "bin/clyde",
     "bin/clyded",
     "bin/clyde-brokerd",
     "bin/clyde-forward",
+    "bin/clyde-init",
 ]
 
 [workspace.package]
@@ -43,6 +45,7 @@ clyde-egress = { path = "crates/clyde-egress" }
 clyde-git = { path = "crates/clyde-git" }
 clyde-api = { path = "crates/clyde-api" }
 clyde-broker-api = { path = "crates/clyde-broker-api" }
+clyde-guest-api = { path = "crates/clyde-guest-api" }
 
 blake3 = "1"
 inotify = { version = "0.11", default-features = false }
@@ -51,6 +54,11 @@ clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 rand = "0.9"
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+rustix = { version = "1", default-features = false }
+# The guest end of the vsock multiplex. rustix exposes AF_VSOCK but no safe
+# address type for it, and hand-rolling `sockaddr_vm` would mean `unsafe` in the
+# one process that runs as PID 1 inside the boundary (AGENTS.md).
+vsock = "0.5"
 rusqlite = { version = "0.37", features = ["bundled", "chrono"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = "1"

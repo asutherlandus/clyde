@@ -183,13 +183,21 @@ pub fn snapshot_request(
     exclusions: BTreeSet<String>,
 ) -> Result<SnapshotRequest> {
     let workspace = daemon.store.get_workspace(&baseline.workspace)?;
-    Ok(SnapshotRequest::from_baseline(
+    let mut request = SnapshotRequest::from_baseline(
         baseline.workspace.clone(),
         mission.clone(),
         workspace.root,
         baseline,
         exclusions,
-    ))
+    );
+    // The previous snapshot for this mission and target decides each entry's
+    // mtime, which is what makes the next incremental build both fast and
+    // correct (D27). Its absence simply means every entry is new.
+    request.previous = daemon
+        .store
+        .latest_snapshot(mission, &baseline.target)?
+        .map(|snapshot| snapshot.manifest);
+    Ok(request)
 }
 
 /// Checks a bundle's inventory against the pinned baseline, **before** the

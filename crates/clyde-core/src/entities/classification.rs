@@ -96,6 +96,23 @@ pub enum IsolationLevel {
     MicroVm,
 }
 
+impl IsolationLevel {
+    /// Parses the rendered form.
+    ///
+    /// Used by the operator surface, where a human names an isolation level on
+    /// the command line. Unknown text is a refusal rather than a default: a typo
+    /// must not quietly run a task at whatever the policy floor happened to be.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "in-process" => Some(Self::InProcess),
+            "broker" => Some(Self::Broker),
+            "namespace-sandbox" | "namespace" => Some(Self::NamespaceSandbox),
+            "microvm" | "micro-vm" => Some(Self::MicroVm),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for IsolationLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {

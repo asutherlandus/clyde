@@ -45,6 +45,8 @@ pub async fn build(daemon: &Arc<Daemon>, mission: &MissionId) -> Result<MissionR
                 .as_ref()
                 .map(|outcome| outcome.classification.name().to_owned()),
             policy_digest: run.policy_digest.to_string(),
+            principal: run.request.principal.kind_name().to_owned(),
+            posture: run.posture.name().to_owned(),
         })
         .collect();
 
@@ -153,6 +155,20 @@ pub async fn build(daemon: &Arc<Daemon>, mission: &MissionId) -> Result<MissionR
         .find(|artifact| artifact.kind == clyde_core::artifact::ArtifactKind::Diff)
         .map(|artifact| artifact.id.to_string());
 
+    // Distinct, in the order first seen. If a mission spans a posture change,
+    // review must show both rather than the current one (D26).
+    let mut postures: Vec<String> = Vec::new();
+    for task in &tasks {
+        if !postures.contains(&task.posture) {
+            postures.push(task.posture.clone());
+        }
+    }
+    if postures.is_empty() {
+        // No task ran, so nothing happened under a posture. Report the one in
+        // force now rather than an empty list, which would read as "unknown".
+        postures.push(daemon.posture.name().to_owned());
+    }
+
     Ok(MissionReview {
         mission: record.id.to_string(),
         objective: record.objective,
@@ -171,6 +187,7 @@ pub async fn build(daemon: &Arc<Daemon>, mission: &MissionId) -> Result<MissionR
         egress,
         brokered_operations: brokered,
         budget_consumed,
+        postures,
         closing_diff,
         audit_intact,
     })

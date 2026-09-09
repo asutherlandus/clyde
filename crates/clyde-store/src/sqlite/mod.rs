@@ -469,6 +469,23 @@ impl Store for SqliteStore {
         Ok(mission)
     }
 
+    fn set_mission_expiry(
+        &self,
+        id: &MissionId,
+        expiry: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let mut mission = self.get_mission(id)?;
+        mission.expiry = expiry;
+        let payload = encode("mission", &mission)?;
+        self.conn()?
+            .execute(
+                "UPDATE missions SET payload = ?2 WHERE id = ?1",
+                params![id.as_str(), payload],
+            )
+            .map(|_| ())
+            .map_err(backend)
+    }
+
     fn set_mission_cache_dir(&self, id: &MissionId, cache_dir: Option<PathBuf>) -> Result<()> {
         let mut mission = self.get_mission(id)?;
         mission.cache_dir = cache_dir;
@@ -1057,6 +1074,23 @@ impl Store for SqliteStore {
             .map_err(backend)
     }
 
+    fn set_task_run_backend(
+        &self,
+        id: &TaskRunId,
+        kind: clyde_core::classification::BackendKind,
+    ) -> Result<()> {
+        let mut run = self.get_task_run(id)?;
+        run.backend = kind;
+        let payload = encode("task run", &run)?;
+        self.conn()?
+            .execute(
+                "UPDATE task_runs SET payload = ?2 WHERE id = ?1",
+                params![id.as_str(), payload],
+            )
+            .map(|_| ())
+            .map_err(backend)
+    }
+
     fn record_policy_decision(&self, decision: PolicyDecision) -> Result<()> {
         let payload = encode("policy decision", &decision)?;
         self.conn()?
@@ -1125,6 +1159,32 @@ impl Store for SqliteStore {
             id.as_str(),
         )?
         .ok_or_else(|| StoreError::UnknownSnapshot(id.clone()))
+    }
+
+    fn latest_snapshot(&self, mission: &MissionId, target: &RepoPath) -> Result<Option<Snapshot>> {
+        // The target and timestamp live in the payload rather than in columns.
+        // This runs once per build, against one mission's rows, so a JSON scan is
+        // cheaper than the migration that would avoid it.
+        let guard = self.conn()?;
+        let mut statement = guard
+            .prepare(
+                "SELECT payload FROM snapshots
+                  WHERE mission = ?1
+                    AND json_extract(payload, '$.requested_path') = ?2
+                  ORDER BY json_extract(payload, '$.created_at') DESC
+                  LIMIT 1",
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![mission.as_str(), target.as_str()])
+            .map_err(backend)?;
+        match rows.next().map_err(backend)? {
+            None => Ok(None),
+            Some(row) => {
+                let payload: String = row.get(0).map_err(backend)?;
+                Ok(Some(decode("snapshot", &payload)?))
+            }
+        }
     }
 
     fn snapshot_contains(&self, id: &SnapshotId, path: &RepoPath) -> Result<bool> {

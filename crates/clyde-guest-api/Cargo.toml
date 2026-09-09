@@ -1,0 +1,16 @@
+[package]
+name = "clyde-guest-api"
+description = "The microVM job contract, shared by clyded and the guest init"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

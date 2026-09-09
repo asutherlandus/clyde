@@ -1,17 +1,13 @@
-# Clyde Next: Schema Reference
+# Schema Reference
 
-## Purpose
+The canonical entity reference: fields, state machines, invariants, and persistence layout. It is the interface contract between phases — Phase 0 lands these as Rust types with `serde` and validation ([D4](decisions.md#d4-phase-0-delivers-flake-ci-crate-layout-and-typed-schemas)), and later phases implement behaviour against them.
 
-This document is the canonical schema reference for Clyde Next Phases 0-4. It defines the entities, their fields, their state machines, their invariants, and their persistence layout.
-
-It is the interface contract between phases: Phase 0 lands these as Rust types with `serde` and validation ([D4](decisions.md#d4-phase-0-delivers-flake-ci-crate-layout-and-typed-schemas)), and Phases 1-4 implement behaviour against them.
-
-Type sketches below are illustrative Rust, not final code. Field presence, cardinality, and invariants are normative; naming may be refined during Phase 0 implementation.
+Type sketches are illustrative Rust, not final code. Field presence, cardinality, and invariants are normative; naming may be refined during implementation.
 
 ## Conventions
 
 ### Identifiers
-All entity identifiers are typed newtypes over a string, never bare `String` at API boundaries:
+Typed newtypes over a string, never bare `String` at API boundaries:
 
 ```rust
 pub struct MissionId(String);   // "m-<ulid>"
@@ -24,10 +20,10 @@ pub struct ApprovalId(String);  // "ap-<ulid>"
 pub struct WorkspaceId(String); // "w-<ulid>"
 ```
 
-ULIDs are used for entities whose creation order matters; content hashes (BLAKE3) for entities whose identity is their content. Human-readable prefixes are retained for log legibility.
+ULIDs where creation order matters; BLAKE3 content hashes where identity *is* the content. Human-readable prefixes are retained for log legibility.
 
 ### Time
-All timestamps are UTC, serialised as RFC 3339. Durations are serialised as strings (`"45m"`, `"10s"`) at config and API boundaries, and held as `Duration` internally.
+UTC, serialised as RFC 3339. Durations are strings (`"45m"`, `"10s"`) at config and API boundaries, `Duration` internally.
 
 ### Paths
 Repository paths are workspace-root-relative, normalised, and rejected if they escape the root, contain `..` after normalisation, or traverse a symlink out of the workspace. This validation lives in one place and is exercised by unit tests from Phase 0.
@@ -41,23 +37,19 @@ Every deserialised structure is validated on construction. Unknown fields are re
 
 ## Workspace
 
-A registered project directory. Introduced in Phase 1.
-
 ```rust
 pub struct Workspace {
     pub id: WorkspaceId,
-    pub root: PathBuf,              // absolute host path
-    pub vcs: VcsKind,               // Git { default_remote, default_branch } | None
+    pub root: PathBuf,                 // absolute host path
+    pub vcs: VcsKind,                  // Git { default_remote, default_branch } | None
     pub registered_at: DateTime<Utc>,
-    pub policy_digest: Option<String>,  // blake3 of .clyde/policy.toml as last loaded
+    pub policy_digest: Option<String>, // blake3 of .clyde/policy.toml as last loaded
 }
 ```
 
-**Invariants**
-- At most one mission in a non-terminal state per workspace ([D16](decisions.md#d16-one-active-mission-per-workspace)).
-- `root` must be a directory the daemon's user can read and write.
+**Invariants** — at most one mission in a non-terminal state per workspace ([D16](decisions.md#d16-one-active-mission-per-workspace)); `root` must be a directory the daemon's user can read and write.
 
-## Actor
+## Actor and principal
 
 ```rust
 pub enum ActorKind { Human, Agent, SubAgent }
@@ -73,24 +65,63 @@ pub struct Actor {
 
 Actors hold no authority. Authority is always a property of an active lease bound to an actor.
 
-## Actor session and token
+`ActorKind` says what an actor *is*. A separate value says how a given request was authenticated, because the two are different questions and only the second is a security fact about the request ([D25](decisions.md#d25-task-execution-has-an-operator-surface-on-the-admin-socket)):
 
-Introduced in Phase 1 ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)).
+```rust
+pub enum Principal {
+    /// Admin socket, authenticated by SO_PEERCRED.
+    Operator { uid: u32 },
+    /// Actor socket, authenticated by a session token. Covers a hosted agent,
+    /// an agent running outside Clyde, and CI.
+    Session { session_actor: ActorId, hosted: bool },
+}
+```
+
+**Invariants**
+- The principal is determined by the daemon from the connection, never from a request field. A requester cannot assert who it is.
+- `Operator` is reachable only on the admin socket, which is never mounted into a sandbox.
+- `hosted` records whether Clyde launched this actor, which is what distinguishes a warden-hosted agent from an external driver in review. It is observed, not declared.
+
+## Enforcement posture
+
+```rust
+pub enum Posture {
+    /// The driver cannot reach a project build toolchain outside Clyde.
+    Enforcing,
+    /// A driver can bypass the pipeline. Reasons are enumerated, not free text,
+    /// so the UX can render them and a test can assert on them.
+    Advisory { reasons: Vec<BypassReason> },
+}
+
+pub enum BypassReason {
+    ToolchainOnHostPath { program: String },
+    NoHostedActor,
+}
+```
+
+Derived state ([D26](decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)).
+
+**Invariants**
+- No configuration key sets it, and no value produces `Enforcing` on a host where the bypass exists.
+- It is recorded on every task run and rendered in mission review.
+- It never participates in an admission decision — the same separation [R10](decisions.md#r10-a-remedy-that-cannot-work-is-a-defect-not-a-nicety) requires of enclosure detection, and it deserves the same test.
+
+## Actor session and token
 
 ```rust
 pub struct ActorSession {
     pub actor: ActorId,
     pub lease: LeaseId,
-    pub token_hash: [u8; 32],       // SHA-256 of a 256-bit random token
+    pub token_hash: [u8; 32],           // SHA-256 of a 256-bit random token
     pub issued_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,  // never later than lease.expires_at
+    pub expires_at: DateTime<Utc>,      // never later than lease.expires_at
     pub revoked_at: Option<DateTime<Utc>>,
     pub sandbox: Option<SandboxHandle>, // workspace environment hosting this actor
 }
 ```
 
 **Invariants**
-- The plaintext token exists only in the sandbox token file and in the issuing code path. It is never logged, never returned in a query result, and never stored.
+- The plaintext token exists only in the sandbox token file and in the issuing code path. Never logged, never returned by a query, never stored.
 - Token expiry is derived from lease expiry, never independent of it.
 - Revoking a lease revokes every session bound to it, in the same transaction.
 
@@ -102,7 +133,7 @@ pub struct Mission {
     pub workspace: WorkspaceId,
     pub objective: String,
     pub initiator: ActorId,             // human
-    pub primary_actor: ActorId,         // agent
+    pub primary_actor: ActorId,
     pub scope: MissionScope,
     pub allowed_tasks: BTreeSet<TaskType>,
     pub network_policy: NetworkPolicy,
@@ -119,12 +150,10 @@ pub struct Mission {
 }
 
 pub struct MissionScope {
-    pub edit_paths: BTreeSet<RepoPath>,     // writable
-    pub read_paths: BTreeSet<RepoPath>,     // additional read-only
+    pub edit_paths: BTreeSet<RepoPath>, // writable
+    pub read_paths: BTreeSet<RepoPath>, // additional read-only
 }
 ```
-
-### Mission states
 
 ```text
 proposed ──> awaiting_approval ──> active ──┬──> completed
@@ -137,9 +166,9 @@ proposed ──> awaiting_approval ──> active ──┬──> completed
 ```
 
 **Invariants**
-- Terminal states (`completed`, `revoked`, `expired`, `failed`, `denied`) are final; no transition leaves them.
+- Terminal states (`completed`, `revoked`, `expired`, `failed`, `denied`) are final.
 - Entering any terminal state revokes all leases and sessions and schedules cache teardown, in one transaction.
-- `allowed_tasks` may never be widened after approval; widening requires an escalation that produces a new approval record, or a new mission.
+- `allowed_tasks` may never be widened after approval; widening requires an escalation producing a new approval record, or a new mission.
 
 ## Lease
 
@@ -171,8 +200,6 @@ pub struct AuthorityFlags {
 }
 ```
 
-### Lease states
-
 ```text
 issued ──> active ──┬──> exhausted
                     ├──> expired
@@ -182,13 +209,13 @@ issued ──> active ──┬──> exhausted
 
 ### Derivation rules (normative)
 
-A derived lease is valid only if **all** of the following hold against its parent:
+A derived lease is valid only if **all** of these hold against its parent:
 
 1. `repo_scope.edit_paths ⊆ parent.repo_scope.edit_paths`
 2. `repo_scope.read_paths ⊆ parent.repo_scope.read_paths ∪ parent.repo_scope.edit_paths`
 3. `task_scope ⊆ parent.task_scope`
-4. `network_scope` is no wider than `parent.network_scope` (see [egress profile ordering](network-egress-model.md#profile-ordering))
-5. `credential_scope` is no wider than `parent.credential_scope`
+4. `network_scope` is no wider than the parent's (see [egress profile ordering](tasks-and-policy.md#profile-ordering))
+5. `credential_scope` is no wider than the parent's
 6. every `authority` flag is `false` where the parent's is `false`, and `may_spawn_subagents` is `false` (one level of derivation in the MVP)
 7. `expires_at <= parent.expires_at`
 8. `budget` is within the parent's remaining budget, and consumption is charged to both
@@ -211,9 +238,7 @@ pub struct Budget {
 pub struct BudgetUsage { /* same dimensions, consumed */ }
 ```
 
-**Invariants**
-- Budget consumption is recorded before a task starts, not after it completes, so a crashed daemon cannot lose the charge.
-- Exhaustion in any dimension moves the lease to `exhausted` and blocks new work, without terminating in-flight work.
+**Invariants** — consumption is recorded before a task starts, not after it completes, so a crashed daemon cannot lose the charge. Exhaustion in any dimension moves the lease to `exhausted` and blocks new work without terminating in-flight work.
 
 ## Task type and policy
 
@@ -225,7 +250,7 @@ pub enum TaskType {
 }
 ```
 
-The MVP catalog is closed. Task types are Rust enum variants, not strings, so an unknown task type is unrepresentable rather than a runtime lookup failure.
+The MVP catalog is closed. Task types are enum variants, not strings, so an unknown task type is unrepresentable rather than a runtime lookup failure.
 
 ```rust
 pub struct TaskPolicy {
@@ -244,7 +269,7 @@ pub struct TaskPolicy {
 }
 ```
 
-Built-in policies are typed Rust values ([technology choices](technology-choices.md#policy-representation)). `.clyde/policy.toml` may only narrow them ([D14](decisions.md#d14-machine-readable-policy-in-clyde-agentsmd-advisory-only)).
+Built-in policies are typed Rust values ([policy representation](design.md#policy-representation)). `.clyde/policy.toml` may only narrow them ([D14](decisions.md#d14-machine-readable-policy-in-clyde-agentsmd-advisory-only)).
 
 ## Task request and task run
 
@@ -253,6 +278,7 @@ pub struct TaskRequest {
     pub id: TaskRunId,          // allocated at request time
     pub lease: LeaseId,
     pub actor: ActorId,
+    pub principal: Principal,   // how this request was authenticated
     pub task: TaskType,
     pub path: RepoPath,
     pub options: TaskOptions,   // task-specific, validated per type
@@ -263,6 +289,7 @@ pub struct TaskRun {
     pub id: TaskRunId,
     pub request: TaskRequest,
     pub policy_digest: String,      // hash of the resolved policy actually applied
+    pub posture: Posture,           // the posture in force when this ran
     pub snapshot: Option<SnapshotId>,
     pub dependency_bundle: Option<ArtifactId>,
     pub backend: BackendKind,       // which SandboxBackend ran it
@@ -275,8 +302,6 @@ pub struct TaskRun {
 }
 ```
 
-### Task run states
-
 ```text
 requested ──> denied
           └─> admitted ──> preparing ──> running ──┬──> succeeded
@@ -285,9 +310,7 @@ requested ──> denied
                                                    └──> timed_out
 ```
 
-### Task outcome and failure classification
-
-Structured classification is required from Phase 2a, because Phase 3's escalation flow keys off it:
+**Invariants** — `principal` and `posture` are set by the daemon, never by the requester. Admission reads neither: a request from an operator and the same request from a session actor resolve to the same policy and the same decision; only the record differs.
 
 ```rust
 pub struct TaskOutcome {
@@ -295,20 +318,9 @@ pub struct TaskOutcome {
     pub classification: TaskFailureClass,
     pub summary: String,             // redaction-safe, bounded length
 }
-
-pub enum TaskFailureClass {
-    Success,
-    ProjectCodeError,        // compile/test failure in project code
-    MissingDependencies,     // drives the Phase 3 escalation path
-    PolicyDenied,            // blocked by lease or policy before execution
-    EgressBlocked,           // proxy denied a destination
-    ResourceExhausted,       // memory, cpu, wall clock, tasks
-    SandboxFailure,          // backend or host problem, not the project's fault
-    Internal,
-}
 ```
 
-`SandboxFailure` and `Internal` are deliberately distinguished from project errors so that "Clyde is broken" is never reported to a user as "your code is broken".
+`TaskFailureClass` is required from Part 1a because the fetch escalation flow keys off it; the variants and their meanings are in [tasks-and-policy.md](tasks-and-policy.md#failure-classification). `SandboxFailure` and `Internal` are deliberately distinguished from project errors so that "Clyde is broken" is never reported as "your code is broken".
 
 ## Snapshot
 
@@ -326,7 +338,7 @@ pub struct Snapshot {
 pub struct SnapshotManifest {
     pub entries: Vec<SnapshotEntry>,        // path, mode, size, blake3
     pub closure_paths: Vec<RepoPath>,       // build-closure paths outside the requested path
-    pub out_of_lease_paths: Vec<RepoPath>,  // admitted read-only; see OQ1
+    pub out_of_lease_paths: Vec<RepoPath>,  // admitted read-only
     pub exclusions_applied: Vec<String>,
 }
 ```
@@ -335,10 +347,11 @@ pub struct SnapshotManifest {
 - Snapshots are bound read-only into sandboxes, always. Hardlink materialisation shares inodes with the content store, so a writable bind would corrupt the store; the read-only bind is what makes hardlinking safe.
 - Exclusions are applied before hashing, so the snapshot id reflects exactly what the task can see.
 - A snapshot records which paths came from outside the lease's edit scope, so mission review can show it.
+- Materialisation preserves **change ordering in mtime**: a path unchanged since the mission's previous snapshot keeps that snapshot's mtime, and a path whose digest differs in either direction (edited, or reverted to content the store already holds) gets a fresh one ([D27](decisions.md#d27-snapshot-materialisation-preserves-change-ordering-in-mtime)). Cargo decides freshness by mtime, so a snapshot that breaks this reports a pass for a tree it did not build.
 
 ## Access baseline
 
-Introduced in Phase 2a ([D18](decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift)). Stored in Clyde state only, never in the repository.
+Stored in Clyde state only, never in the repository ([D18](decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift)). The model and its rationale are in [tasks-and-policy.md](tasks-and-policy.md#access-baselines).
 
 ```rust
 pub struct AccessBaseline {
@@ -381,31 +394,27 @@ pub struct CodeExecEntry {
     pub kind: CodeExecKind,             // BuildScript | ProcMacro | Both
     pub source_blake3: String,          // hash of the package source in the bundle
 }
-```
 
-### Drift classification
-
-```rust
 pub enum AccessDrift {
-    /// Read outside grants ∪ pins. Note: never triggered by a new file inside a grant.
+    /// Read outside grants ∪ pins. Never triggered by a new file inside a grant.
     PathOutsideBaseline { path: RepoPath },
     /// New in-repo path dependency on a crate outside the approved scope.
     ClosureLeftApprovedScope { path: RepoPath, dependent: String },
     NewCodeExecCrate { crate_name: String, version: String, kind: CodeExecKind },
     CodeExecVersionChanged { crate_name: String, from: String, to: String },
-    CodeExecContentChanged { crate_name: String, version: String },  // registry tampering signal
+    CodeExecContentChanged { crate_name: String, version: String }, // tampering signal
 }
 ```
 
 **Invariants**
 - A baseline has no effect until `confirmed_by` names a human who confirmed it on the admin channel.
 - A task with no confirmed baseline for its `(workspace, task, target)` key is refused. There is no implicit wide-scope run.
-- Path enforcement is by materialization: the snapshot contains the granted subtrees minus absolute exclusions, plus the pins, so enforcement cannot drift from the record.
-- `SubtreeGrant` entries are **not** drift-sensitive. A file appearing inside one is admitted on the next snapshot and produces no `AccessDrift`, because first-party editing is the work rather than the threat.
-- Absolute exclusions (`.env*`, key material, `target/`, `node_modules/`, `.git` by default) are applied before grants and cannot be admitted by a grant.
-- A `FilePin` or `SubtreePin` requires a `reason`, so a later reviewer can tell why the build reaches outside the project's approved scope.
-- The inventory check runs **before** the sandbox starts, so a new or changed build script is detected before it executes.
-- `CodeExecContentChanged` is reported distinctly from a version change, because same-version content change is a tampering signal rather than an upgrade.
+- Path enforcement is by materialization, so enforcement cannot drift from the record.
+- `SubtreeGrant` entries are **not** drift-sensitive. A file appearing inside one is admitted on the next snapshot and produces no `AccessDrift`.
+- Absolute exclusions are applied before grants and cannot be admitted by a grant.
+- A `FilePin` or `SubtreePin` requires a `reason`, so a later reviewer can tell why the build reaches outside the approved scope.
+- The inventory check runs **before** the sandbox starts.
+- `CodeExecContentChanged` is reported distinctly from a version change.
 - Learn-mode observation may only be initiated by a human on the admin channel, and produces a proposal, never a confirmed baseline.
 
 ## Artifact
@@ -417,7 +426,7 @@ pub struct Artifact {
                                 // | Coverage | CommitProposal | Signature | Provenance
     pub produced_by: Option<TaskRunId>,
     pub mission: MissionId,
-    pub trust_class: TrustClass,    // trust class of the context that produced it
+    pub trust_class: TrustClass,   // trust class of the context that produced it
     pub size_bytes: u64,
     pub blake3: String,
     pub content_ref: PathBuf,      // blob store path
@@ -426,8 +435,7 @@ pub struct Artifact {
 }
 ```
 
-**Invariant**
-Every artifact carries the trust class of the environment that produced it. A consumer must be able to tell whether content came from untrusted execution without inferring it from the artifact kind.
+**Invariant** — every artifact carries the trust class of the environment that produced it. A consumer must be able to tell whether content came from untrusted execution without inferring it from the artifact kind.
 
 ## Approval
 
@@ -450,20 +458,21 @@ pub struct ApprovalDecision {
     pub request: ApprovalId,
     pub decided_by: ActorId,        // must be Human, over the admin socket
     pub decision: Decision,         // ApproveOnce | ApproveForMission | Deny
+    pub self_confirmed: bool,       // requester and decider are the same human
     pub decided_at: DateTime<Utc>,
     pub note: Option<String>,
 }
 ```
 
 **Invariants**
-- `request_digest` binds the approval to the exact operation. An approved push is approved for one commit, one remote, one refspec — a later request that differs in any of those does not match.
-- `decided_by` must be a human actor authenticated on the admin socket ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)). This is enforced at the transport layer, not by checking a field.
-- `ApproveForMission` records a policy relaxation scoped to one mission, and appears in mission review as such.
+- `request_digest` binds the approval to the exact operation. An approved push is approved for one commit, one remote, one refspec; a later request differing in any of those does not match.
+- `decided_by` must be a human authenticated on the admin socket ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)). Enforced at the transport layer, not by checking a field.
+- `self_confirmed` is derived by comparing the requesting principal to the deciding one, never asserted. It is `true` only when the request itself came from `Principal::Operator` with the same uid.
+- A self-confirmation is rendered as a **confirmation** rather than an approval wherever it is shown. The prompt and the evidence are identical; the claim about what happened is not, and overstating it in the record would be the more damaging error.
+- `ApproveForMission` records a policy relaxation scoped to one mission and appears in mission review as such.
 - An expired approval cannot be consumed. Consumption is single-use for `ApproveOnce`.
 
 ## Brokered operation
-
-Introduced in Phase 4.
 
 ```rust
 pub struct BrokeredOperation {
@@ -472,7 +481,8 @@ pub struct BrokeredOperation {
     pub lease: LeaseId,
     pub approval: ApprovalId,
     pub kind: BrokeredKind,     // GitPush { remote, refspec, commit } in the MVP
-    pub state: BrokerOpState,   // requested | approved | executing | succeeded | failed | frozen
+    pub state: BrokerOpState,   // requested | approved | executing | succeeded
+                                // | failed | frozen
     pub result_summary: Option<String>,
     pub requested_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -481,6 +491,7 @@ pub struct BrokeredOperation {
 
 **Invariants**
 - No brokered operation executes without a matching, unexpired, unconsumed `ApprovalDecision` whose `request_digest` equals this operation's normalised digest.
+- The broker's own replay protection is the operation **state**: clyded moves it to `executing` immediately before calling, a terminal operation cannot re-enter that state, and the broker refuses anything not in it ([R8](decisions.md#r8-replay-protection-is-the-brokered-operations-state)).
 - Mission revocation moves in-flight operations to `frozen` rather than cancelling silently.
 
 ## Policy decision
@@ -499,7 +510,7 @@ pub struct PolicyDecision {
 }
 ```
 
-`PolicyReason` is a structured enum (`OutOfLeaseScope { path }`, `TaskNotInLease { task }`, `BudgetExhausted { dimension }`, `LeaseExpired`, `EgressWiderThanLease { .. }`, ...) so that denials can be rendered as actionable messages and asserted in tests.
+`PolicyReason` is a structured enum (`OutOfLeaseScope { path }`, `TaskNotInLease { task }`, `BudgetExhausted { dimension }`, `LeaseExpired`, `EgressWiderThanLease { .. }`, …) so denials can be rendered as actionable messages and asserted in tests.
 
 ## Audit events
 
@@ -515,8 +526,8 @@ pub struct AuditEvent {
     pub snapshot: Option<SnapshotId>,
     pub artifacts: Vec<ArtifactId>,
     pub approval: Option<ApprovalId>,
-    pub payload: serde_json::Value,  // redacted at construction, never raw secrets
-    pub prev_hash: String,           // blake3 of the previous event's canonical encoding
+    pub payload: serde_json::Value, // redacted at construction, never raw secrets
+    pub prev_hash: String,          // blake3 of the previous event's canonical encoding
     pub hash: String,
 }
 ```
@@ -526,12 +537,15 @@ pub struct AuditEvent {
 - `prev_hash` chains events, making truncation and in-place edits detectable.
 - Payload construction goes through a redaction helper; there is no path that serialises a credential-bearing type into a payload, and that is enforced by not implementing `Serialize` on those types.
 
-### Minimum event set for Phases 0-4
-Mission proposed/approved/denied/activated/closed/revoked; lease issued/derived/renewed/expired/revoked; session bound/revoked; task requested/admitted/denied/started/finished; snapshot created; artifact stored; egress attempt allowed/denied; approval requested/decided/expired; brokered operation requested/executed/failed/frozen; policy config loaded (with digest and any rejected widening); baseline proposed/confirmed/amended/reset; **learn mode initiated** (distinctly, since it is a wide-scope run); access drift detected, by class.
+### Minimum event set
 
-## Persistence layout
+Mission proposed/approved/denied/activated/closed/revoked; lease issued/derived/renewed/expired/revoked; session bound/revoked; task requested/admitted/denied/started/finished; snapshot created; artifact stored; egress attempt allowed/denied; approval requested/decided/expired; brokered operation requested/executed/failed/frozen; policy config loaded, with digest and any rejected widening; baseline proposed/confirmed/amended/reset; **learn mode initiated** (distinctly, since it is a wide-scope run); access drift detected, by class.
 
-SQLite, at `~/.local/share/clyde/db.sqlite`, with blobs alongside:
+Every event carries the acting `Principal` and the `Posture` in force. Both are recorded rather than reconstructed later, because posture in particular is a property of the moment: a deployment that gains the warden halfway through a mission should not retroactively look as though the earlier work was enforced.
+
+## Persistence
+
+SQLite at `~/.local/share/clyde/db.sqlite`, with blobs alongside:
 
 ```text
 ~/.local/share/clyde/
@@ -544,24 +558,21 @@ SQLite, at `~/.local/share/clyde/db.sqlite`, with blobs alongside:
   run/              sockets: clyded.sock, clyded-admin.sock, brokerd.sock
 ```
 
-### Tables
-
-`workspaces`, `actors`, `missions`, `leases`, `actor_sessions`, `task_requests`, `task_runs`, `snapshots`, `snapshot_entries`, `artifacts`, `approval_requests`, `approval_decisions`, `broker_ops`, `policy_decisions`, `egress_attempts`, `access_baselines`, `baseline_paths`, `code_exec_inventory`, `audit_events`, `config_loads`.
+**Tables** — `workspaces`, `actors`, `missions`, `leases`, `actor_sessions`, `task_requests`, `task_runs`, `snapshots`, `snapshot_entries`, `artifacts`, `approval_requests`, `approval_decisions`, `broker_ops`, `policy_decisions`, `egress_attempts`, `access_baselines`, `baseline_paths`, `code_exec_inventory`, `audit_events`, `config_loads`.
 
 Access baselines live here and nowhere else. They are deliberately not repository files: an attacker who could edit the baseline could conceal their own drift.
 
-### Storage rules
-
-- `PRAGMA journal_mode=WAL`, `foreign_keys=ON`, `synchronous=FULL` for the audit and approval tables' transactions.
-- Every state transition that spans entities (mission closeout, lease revocation, budget charge plus task admission) happens in one transaction.
-- Migrations are versioned and forward-only from Phase 0, even though the schema is expected to churn — a schema that cannot be migrated cannot be dogfooded.
-- The store crate exposes typed repository traits, so policy and mission logic are testable against an in-memory implementation with no SQLite dependency ([testability requirement O](requirements.md#o-testability)).
+**Storage rules**
+- `PRAGMA journal_mode=WAL`, `foreign_keys=ON`, `synchronous=FULL` for audit and approval transactions.
+- Every state transition spanning entities — mission closeout, lease revocation, budget charge plus task admission — happens in one transaction.
+- Migrations are versioned and forward-only from Phase 0, even though the schema is expected to churn: a schema that cannot be migrated cannot be dogfooded.
+- The store crate exposes typed repository traits, so policy and mission logic are testable against an in-memory implementation with no SQLite dependency ([testability](design.md#lo-non-functional)).
 
 ## Wire representation
 
-The actor API (MCP, [D10](decisions.md#d10-mcp-is-the-primary-actor-facing-api)) and admin API (JSON-RPC) share one serialisation of these types, with two rules:
+The actor API (MCP) and the admin API (JSON-RPC) share one serialisation of these types, with two rules:
 
 1. **Actor-facing responses are filtered.** An actor sees its own lease, its own tasks, and its own artifacts. It does not see other actors' tokens, other missions, host paths outside its sandbox view, or audit payloads.
 2. **Host paths are never leaked into actor-facing responses.** Paths are rendered workspace-relative or as sandbox-internal paths.
 
-Both rules are properties of dedicated view types, not of ad hoc field skipping, so that adding a field to a domain type cannot accidentally widen what an agent can see.
+Both are properties of dedicated view types, not of ad hoc field skipping, so adding a field to a domain type cannot accidentally widen what a driver can see.

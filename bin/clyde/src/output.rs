@@ -241,32 +241,127 @@ pub fn review(value: &serde_json::Value) -> String {
     lines.join("\n")
 }
 
+/// Width of the status marker column, sized to the widest marker.
+const MARKER: usize = 5;
+/// Width of the probe-name column.
+const LABEL: usize = 21;
+/// Column where wrapped detail text resumes.
+const INDENT: usize = 2 + MARKER + 2 + LABEL;
+
+/// The terminal width to wrap at, within bounds that keep the columns legible.
+fn wrap_width() -> usize {
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(100)
+        .clamp(60, 120)
+}
+
+/// Wraps `text` on word boundaries, resuming each line at `indent`.
+///
+/// The first line arrives already prefixed by the caller's columns, so only the
+/// continuations are indented.
+fn wrapped(prefix: &str, text: &str, indent: usize) -> Vec<String> {
+    let width = wrap_width();
+    let mut lines = Vec::new();
+    let mut current = prefix.to_owned();
+    let mut column = prefix.chars().count();
+    let mut first = true;
+    for word in text.split_whitespace() {
+        let len = word.chars().count();
+        if !first && column + 1 + len > width {
+            lines.push(current);
+            current = " ".repeat(indent);
+            column = indent;
+            first = true;
+        }
+        if !first {
+            current.push(' ');
+            column += 1;
+        }
+        current.push_str(word);
+        column += len;
+        first = false;
+    }
+    lines.push(current);
+    lines
+}
+
 /// Renders the host report.
 pub fn doctor(value: &serde_json::Value) -> String {
     let mut lines = Vec::new();
+    // Where the report came from, because several rows depend on configuration
+    // and a direct probe reads a different file set than a running daemon. An
+    // operator who does not know which they are looking at cannot tell "not
+    // configured" from "not visible from here".
+    if let Some(source) = value["source"].as_str() {
+        lines.extend(wrapped("report: ", source, 8));
+        lines.push(String::new());
+    }
+    if let Some(error) = value["config_error"].as_str() {
+        lines.extend(wrapped("configuration did not load: ", error, 8));
+        lines.extend(wrapped(
+            &" ".repeat(8),
+            "every row below that depends on configuration is reported as unconfigured",
+            8,
+        ));
+        lines.push(String::new());
+    }
+    lines.push("host prerequisites".to_owned());
     for (label, key) in [
         ("user namespaces", "user_namespaces"),
         ("cgroup v2", "cgroup_v2"),
         ("cgroup delegation", "cgroup_delegation"),
+        ("session bus", "session_bus"),
+        ("runtime roots", "runtime_roots"),
         ("kvm", "kvm"),
         ("bubblewrap", "bubblewrap"),
         ("firecracker", "firecracker"),
+        ("mke2fs", "mke2fs"),
+        ("guest images", "guest_images"),
         ("nix", "nix"),
         ("hardlinks", "hardlinks"),
     ] {
         let entry = &value[key];
+        // An absent key is version skew, not a failed probe: a `clyde` newer than
+        // the `clyded` it is talking to renders a row the daemon never reported.
+        // Showing that as MISS sends someone to fix a host that is fine.
+        if entry.is_null() {
+            lines.extend(wrapped(
+                &format!("  {:<MARKER$}  {label:<LABEL$}", "?"),
+                "not reported by the running clyded, which predates this check",
+                INDENT,
+            ));
+            lines.extend(wrapped(
+                &format!("{}remedy: ", " ".repeat(INDENT)),
+                "reinstall clyded from the same build as this clyde, and restart it",
+                INDENT + 8,
+            ));
+            continue;
+        }
         let state = entry["state"].as_str().unwrap_or("unknown");
         let marker = match state {
-            "available" => "ok  ",
+            "available" => "ok",
             "blocked" => "BLOCK",
             _ => "MISS",
         };
-        lines.push(format!("{marker} {label:<20} {}", scalar(&entry["detail"])));
+        lines.extend(wrapped(
+            &format!("  {marker:<MARKER$}  {label:<LABEL$}"),
+            &scalar(&entry["detail"]),
+            INDENT,
+        ));
+        // The remedy is indented under its detail rather than repeating the
+        // label, so the eye reads one probe as one block.
         if let Some(remedy) = entry["remedy"].as_str() {
-            lines.push(format!("      {label:<20} remedy: {remedy}"));
+            lines.extend(wrapped(
+                &format!("{}remedy: ", " ".repeat(INDENT)),
+                remedy,
+                INDENT + 8,
+            ));
         }
     }
     lines.push(String::new());
+    lines.push("what this host can run".to_owned());
     for (label, key) in [
         ("workspace environment", "can_run_workspace"),
         ("build and test tasks", "can_run_build"),
@@ -274,21 +369,44 @@ pub fn doctor(value: &serde_json::Value) -> String {
         ("brokered publishing", "broker_reachable"),
     ] {
         let capable = value[key].as_bool().unwrap_or(false);
-        lines.push(format!(
-            "{} {label}",
-            if capable { "ok   " } else { "NO   " }
-        ));
+        let marker = if capable { "ok" } else { "NO" };
+        lines.push(format!("  {marker:<MARKER$}  {label}"));
     }
     if let Some(assertion) = value["runtime_root_workspace"].as_str() {
-        lines.push(format!("      workspace runtime root: {assertion}"));
+        lines.extend(wrapped(
+            &format!("  {:<MARKER$}  workspace runtime root: ", ""),
+            assertion,
+            INDENT,
+        ));
+    }
+
+    // Posture goes in the summary, not a footnote. Shipping the strong half of a
+    // security product and describing it as though the other half existed is
+    // worse than not splitting at all, so the weaker mode has to be loud (D26).
+    let posture = &value["posture"];
+    if let Some(name) = posture["posture"].as_str() {
+        lines.push(String::new());
+        lines.push(match name {
+            "enforcing" => {
+                "posture: enforcing — typed tasks are the only path to project execution".to_owned()
+            }
+            other => format!("posture: {other} — project code can be run outside Clyde entirely"),
+        });
+        if let serde_json::Value::Array(reasons) = &posture["reasons"] {
+            lines.extend(
+                reasons
+                    .iter()
+                    .flat_map(|line| wrapped("  - ", &scalar(line), 4)),
+            );
+        }
     }
     if let serde_json::Value::Array(limitations) = &value["known_limitations"] {
         lines.push(String::new());
-        lines.push("known limitations:".to_owned());
+        lines.push("known limitations".to_owned());
         lines.extend(
             limitations
                 .iter()
-                .map(|line| format!("  - {}", scalar(line))),
+                .flat_map(|line| wrapped("  - ", &scalar(line), 4)),
         );
     }
     lines.join("\n")
@@ -430,7 +548,46 @@ mod tests {
         assert!(rendered.contains("BLOCK"));
         assert!(rendered.contains("remedy: install a profile"));
         assert!(rendered.contains("known limitations"));
-        assert!(rendered.contains("NO    build and test tasks"));
+        assert!(rendered.contains("NO     build and test tasks"));
+        assert!(
+            rendered.contains("host prerequisites") && rendered.contains("what this host can run"),
+            "the two blocks answer different questions and are labelled as such"
+        );
+    }
+
+    #[test]
+    fn a_probe_the_daemon_never_reported_is_skew_not_a_failure() {
+        // A `clyde` newer than the `clyded` it talks to. Rendering the absent
+        // key as MISS with a `-` detail sends someone to fix a host that is fine;
+        // the actual remedy is to reinstall the daemon.
+        let value = serde_json::json!({
+            "user_namespaces": {"state": "available", "detail": "ok"},
+            "cgroup_v2": {"state": "available", "detail": "ok"},
+            "cgroup_delegation": {"state": "available", "detail": "ok"},
+            "bubblewrap": {"state": "available", "detail": "ok"},
+            "nix": {"state": "available", "detail": "ok"},
+            "hardlinks": {"state": "available", "detail": "ok"},
+            "kvm": {"state": "unavailable", "detail": "absent", "remedy": "enable virtualisation"},
+            "firecracker": {"state": "unavailable", "detail": "absent", "remedy": "install it"},
+            "can_run_workspace": true,
+            "can_run_build": true,
+            "can_run_microvm": false,
+            "broker_reachable": false,
+            "known_limitations": [],
+        });
+        let rendered = doctor(&value);
+        for label in ["session bus", "runtime roots"] {
+            let line = rendered
+                .lines()
+                .find(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("{label} must still be listed"));
+            assert!(line.contains('?'), "skew is marked distinctly: {line}");
+            assert!(
+                !line.contains("MISS"),
+                "an unreported probe is not a failed one: {line}"
+            );
+        }
+        assert!(rendered.contains("reinstall clyded"));
     }
 
     #[test]

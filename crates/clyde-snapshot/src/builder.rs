@@ -9,7 +9,7 @@
 //! last snapshot is picked up automatically. That is the property that keeps the
 //! inner loop free of prompts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -19,7 +19,7 @@ use clyde_core::repo_path::RepoPath;
 use clyde_core::snapshot::{MaterialisationKind, Snapshot, SnapshotEntry, SnapshotManifest};
 use clyde_policy::exclusions::{ExclusionRule, exclusion_for};
 
-use crate::content::ContentStore;
+use crate::content::{ContentStore, Freshness};
 use crate::error::{Result, SnapshotError};
 
 /// What a snapshot should contain.
@@ -41,6 +41,12 @@ pub struct SnapshotRequest {
     /// Paths admitted from outside the lease's edit scope, recorded so mission
     /// review can show the confidentiality delta.
     pub out_of_lease_paths: Vec<RepoPath>,
+    /// The manifest of the previous snapshot for this mission and target, if
+    /// there is one.
+    ///
+    /// Used only to decide each entry's mtime (D27); it has no effect on the
+    /// snapshot's identity, its contents, or what the task may read.
+    pub previous: Option<SnapshotManifest>,
     /// Additional exclusion patterns from configuration.
     pub configured_exclusions: BTreeSet<String>,
     /// Upper bound on the snapshot, so a runaway tree fails loudly rather than
@@ -71,6 +77,7 @@ impl SnapshotRequest {
             pins: baseline.pins().cloned().collect(),
             closure_paths: Vec::new(),
             out_of_lease_paths: Vec::new(),
+            previous: None,
             configured_exclusions,
             max_bytes: 4 << 30,
             max_entries: 200_000,
@@ -151,18 +158,61 @@ pub fn build(store: &ContentStore, request: &SnapshotRequest) -> Result<BuiltSna
     let id = manifest.identity()?;
 
     let tree = store.tree_path(id.as_str());
+
+    // What the previous snapshot for this mission and target held, keyed by
+    // path. Absent on the first run of a target, where every entry is new and
+    // there is no build output for its mtime to be compared against yet.
+    let previous: BTreeMap<&str, &str> = request
+        .previous
+        .as_ref()
+        .map(|manifest| {
+            manifest
+                .entries
+                .iter()
+                .map(|entry| (entry.path.as_str(), entry.blake3.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let unchanged_since_previous = request
+        .previous
+        .as_ref()
+        .and_then(|manifest| manifest.identity().ok())
+        .is_some_and(|previous_id| previous_id == id);
+
     // A snapshot identity is its content, so an existing tree with the same
-    // identity is the same tree; rebuilding it would be wasted work.
+    // identity holds the same bytes. Reusing it is only *correct* when nothing
+    // changed since the previous run, though: reverting a file lands on an
+    // identity this mission built earlier, and reusing that tree would hand the
+    // build the mtimes it had then — older than the outputs, so cargo would call
+    // the crate fresh and report a pass for a tree it did not build (D27).
     let mut materialisation = MaterialisationKind::Hardlink;
-    if !tree.exists() {
+    if !tree.exists() || !unchanged_since_previous {
         for entry in &manifest.entries {
-            let kind = store.materialise(&entry.blake3, &tree, Path::new(entry.path.as_str()))?;
-            if kind == MaterialisationKind::Copy {
+            let freshness = match (request.previous.as_ref(), previous.get(entry.path.as_str())) {
+                // A first build has no outputs for these mtimes to be compared
+                // against, so there is nothing to be newer than. Hardlinking is
+                // both correct and cheaper, and it keeps an untouched file's mtime
+                // stable from here on rather than letting it move backwards on
+                // the next run.
+                (None, _) => Freshness::Unchanged,
+                (Some(_), Some(digest)) if *digest == entry.blake3.as_str() => Freshness::Unchanged,
+                // Changed, or new, or reverted. All three must look newer than
+                // the outputs; only the first two would under hardlinking.
+                _ => Freshness::Changed,
+            };
+            let kind = store.materialise(
+                &entry.blake3,
+                &tree,
+                Path::new(entry.path.as_str()),
+                freshness,
+            )?;
+            if kind == MaterialisationKind::Copy && freshness == Freshness::Unchanged {
+                // Only an unplanned copy says something about the host: it means
+                // hardlinking is unavailable between the store and this tree.
                 materialisation = MaterialisationKind::Copy;
             }
         }
     }
-
     Ok(BuiltSnapshot {
         snapshot: Snapshot {
             id,
@@ -351,6 +401,7 @@ mod tests {
             requested_path: path("crates/core"),
             grants: grants.iter().map(|grant| path(grant)).collect(),
             pins: Vec::new(),
+            previous: None,
             closure_paths: Vec::new(),
             out_of_lease_paths: Vec::new(),
             configured_exclusions: BTreeSet::new(),
@@ -522,6 +573,118 @@ mod tests {
                 .snapshot
                 .manifest
                 .contains(&path("crates/core/data.bin"))
+        );
+    }
+
+    /// The mtime a task would see for one path in a built snapshot.
+    fn mtime_of(built: &BuiltSnapshot, relative: &str) -> std::time::SystemTime {
+        std::fs::metadata(built.tree.join(relative))
+            .and_then(|metadata| metadata.modified())
+            .expect("a materialised file has an mtime")
+    }
+
+    #[test]
+    fn an_unchanged_file_keeps_the_mtime_the_previous_run_saw() {
+        // If it did not, cargo would rebuild everything on every run: the whole
+        // point of the per-mission warm cache would be lost (D27).
+        let fixture = fixture();
+        let first = build(&fixture.store, &request(&fixture, &["crates/core"])).unwrap();
+        let before = mtime_of(&first, "crates/core/src/lib.rs");
+
+        // A different file changes, so this is a new snapshot identity, but
+        // lib.rs itself is untouched.
+        std::fs::write(
+            fixture.root.join("crates/core/src/other.rs"),
+            "pub fn other() {}",
+        )
+        .unwrap();
+        let mut second = request(&fixture, &["crates/core"]);
+        second.previous = Some(first.snapshot.manifest.clone());
+        let second = build(&fixture.store, &second).unwrap();
+
+        assert_eq!(
+            mtime_of(&second, "crates/core/src/lib.rs"),
+            before,
+            "an untouched file must not appear to have changed"
+        );
+    }
+
+    #[test]
+    fn a_reverted_file_looks_newer_and_does_not_read_as_fresh() {
+        // The failure this exists to prevent: reverting a file re-links a blob
+        // ingested earlier, whose mtime predates the build outputs. Cargo would
+        // call the crate fresh, skip work it needed to do, and the task would
+        // report a pass for a tree it did not build — the worst outcome this
+        // pipeline can produce, because a push approval rests on that evidence.
+        let fixture = fixture();
+        let original = std::fs::read_to_string(fixture.root.join("crates/core/src/lib.rs"))
+            .expect("the fixture has a lib.rs");
+
+        let first = build(&fixture.store, &request(&fixture, &["crates/core"])).unwrap();
+
+        std::fs::write(
+            fixture.root.join("crates/core/src/lib.rs"),
+            "pub fn edited() {}",
+        )
+        .unwrap();
+        let mut second = request(&fixture, &["crates/core"]);
+        second.previous = Some(first.snapshot.manifest.clone());
+        let second = build(&fixture.store, &second).unwrap();
+        let after_edit = mtime_of(&second, "crates/core/src/lib.rs");
+
+        // Back to exactly the original bytes. The content store already holds
+        // this blob, from the first build.
+        std::fs::write(fixture.root.join("crates/core/src/lib.rs"), &original).unwrap();
+        let mut third = request(&fixture, &["crates/core"]);
+        third.previous = Some(second.snapshot.manifest.clone());
+        let third = build(&fixture.store, &third).unwrap();
+
+        assert_eq!(
+            third.snapshot.id, first.snapshot.id,
+            "reverting returns to the first build's identity, which is what makes \
+             this reachable by an ordinary `git checkout --`"
+        );
+        assert!(
+            mtime_of(&third, "crates/core/src/lib.rs") >= after_edit,
+            "a reverted file must not carry an mtime older than the outputs built \
+             from the edit it reverted"
+        );
+    }
+
+    #[test]
+    fn an_edited_file_looks_newer_than_the_run_before_it() {
+        let fixture = fixture();
+        let first = build(&fixture.store, &request(&fixture, &["crates/core"])).unwrap();
+        let before = mtime_of(&first, "crates/core/src/lib.rs");
+
+        std::fs::write(
+            fixture.root.join("crates/core/src/lib.rs"),
+            "pub fn edited() {}",
+        )
+        .unwrap();
+        let mut second = request(&fixture, &["crates/core"]);
+        second.previous = Some(first.snapshot.manifest.clone());
+        let second = build(&fixture.store, &second).unwrap();
+
+        assert!(
+            mtime_of(&second, "crates/core/src/lib.rs") >= before,
+            "an edited file must look at least as new as the run before it"
+        );
+    }
+
+    #[test]
+    fn a_first_build_hardlinks_because_there_is_nothing_to_be_newer_than() {
+        // With no previous snapshot there are no build outputs for these mtimes to
+        // be compared against. Hardlinking is correct and cheap, and it fixes each
+        // untouched file's mtime from here on — stamping them now would let them
+        // move *backwards* on the next run, when the hardlink path takes over.
+        let fixture = fixture();
+        let built = build(&fixture.store, &request(&fixture, &["crates/core"])).unwrap();
+        assert_eq!(
+            built.snapshot.materialisation,
+            MaterialisationKind::Hardlink,
+            "a deliberate fresh copy is not the host telling us hardlinks are \
+             unavailable, and must not be recorded as though it were"
         );
     }
 }

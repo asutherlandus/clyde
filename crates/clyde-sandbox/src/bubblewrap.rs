@@ -254,6 +254,17 @@ impl SandboxBackend for BubblewrapBackend {
             // The daemon's own environment must not leak in; `--clearenv` covers
             // the sandbox, and this covers the wrapper processes.
             command.env_clear();
+            // Except the two variables `systemd-run --user` needs to find the
+            // per-user manager. Cleared, it cannot resolve a bus address and
+            // exits 1 before `bwrap` is ever reached, which surfaces as a task
+            // that failed in milliseconds with no diagnostic to classify. These
+            // reach the wrapper only: `--clearenv` still applies to the payload,
+            // so nothing here is visible to project code.
+            for (key, value) in
+                session_bus_environment(spec.trust_class, |key| std::env::var(key).ok())
+            {
+                command.env(key, value);
+            }
             command.stdin(match seccomp {
                 Some(file) => Stdio::from(file),
                 None => Stdio::null(),
@@ -294,6 +305,28 @@ impl SandboxBackend for BubblewrapBackend {
     fn terminate<'a>(&'a self, handle: &'a SandboxHandle) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { terminate_child(handle.child()).await })
     }
+}
+
+/// The session-bus variables the `systemd-run --user` wrapper needs.
+///
+/// Only for a trust class that gets a cgroup scope — the workspace environment
+/// runs on rlimits alone and needs no bus. `DBUS_SESSION_BUS_ADDRESS` wins where
+/// it is set; otherwise libsystemd derives `$XDG_RUNTIME_DIR/bus`, so passing
+/// the runtime directory is enough. Both are read from the daemon's own
+/// environment, which is where the session it belongs to is recorded.
+/// `lookup` is the environment to read from, injected so this is testable
+/// without mutating the process environment.
+fn session_bus_environment(
+    trust_class: TrustClass,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(&'static str, String)> {
+    if !trust_class.requires_cgroup_limits() {
+        return Vec::new();
+    }
+    ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
+        .into_iter()
+        .filter_map(|key| lookup(key).map(|value| (key, value)))
+        .collect()
 }
 
 /// Opens a log destination, or discards output when no path is given.
@@ -466,6 +499,25 @@ mod tests {
         let index = rendered.iter().position(|arg| arg == "--setenv").unwrap();
         assert_eq!(rendered[index + 1], "CARGO_NET_OFFLINE");
         assert_eq!(rendered[index + 2], "true");
+    }
+
+    #[test]
+    fn a_scoped_task_keeps_the_session_bus_variables_the_wrapper_needs() {
+        let session = |key: &str| match key {
+            "XDG_RUNTIME_DIR" => Some("/run/user/1000".to_owned()),
+            _ => None,
+        };
+        let passed = session_bus_environment(TrustClass::T2, session);
+        assert!(
+            passed
+                .iter()
+                .any(|(key, value)| *key == "XDG_RUNTIME_DIR" && value == "/run/user/1000"),
+            "systemd-run --user cannot resolve a bus address without it: {passed:?}"
+        );
+        assert!(
+            session_bus_environment(TrustClass::T1, session).is_empty(),
+            "the workspace environment gets no cgroup scope and needs no bus"
+        );
     }
 
     #[test]

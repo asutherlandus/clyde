@@ -47,3 +47,7 @@ agent-browser.json
 # Nix
 result
 result-*
+
+# Local host configuration, filled in from config.example.toml.
+# Contains machine-specific store paths; the example is the tracked copy.
+/config.toml

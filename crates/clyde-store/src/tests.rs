@@ -156,6 +156,10 @@ fn task_run(lease: &Lease) -> TaskRun {
         id: id.clone(),
         lease: lease.id.clone(),
         actor: lease.actor.clone(),
+        principal: clyde_core::actor::Principal::Session {
+            session_actor: lease.actor.clone(),
+            hosted: true,
+        },
         task: TaskType::RustCheck,
         path: path("crates/core"),
         options: TaskOptions::RustCheck {
@@ -168,6 +172,9 @@ fn task_run(lease: &Lease) -> TaskRun {
         id,
         request,
         policy_digest: Digest::of_bytes(b"policy"),
+        posture: clyde_core::posture::Posture::Advisory {
+            reasons: vec![clyde_core::posture::BypassReason::NoHostedActor],
+        },
         snapshot: None,
         dependency_bundle: None,
         backend: BackendKind::Bubblewrap,

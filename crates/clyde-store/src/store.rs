@@ -16,6 +16,7 @@ use clyde_core::audit::{AuditChainHead, AuditEvent, AuditEventDraft};
 use clyde_core::baseline::{AccessBaseline, BaselineKey, BaselineProposal};
 use clyde_core::broker::{BrokerOpState, BrokeredOperation};
 use clyde_core::budget::{BudgetCost, BudgetUsage};
+use clyde_core::classification::BackendKind;
 use clyde_core::decision::PolicyDecision;
 use clyde_core::egress::EgressAttempt;
 use clyde_core::ids::{
@@ -70,6 +71,13 @@ pub trait Store: Send + Sync + std::fmt::Debug {
         id: &MissionId,
         cache_dir: Option<std::path::PathBuf>,
     ) -> Result<()>;
+    /// Moves the mission's expiry, as a renewal does.
+    ///
+    /// A setter of its own because the mission's expiry and its lease's must
+    /// move together: a lease that outlives the envelope a human approved is
+    /// authority nobody granted, and a mission that expires before its lease
+    /// refuses work the lease still permits.
+    fn set_mission_expiry(&self, id: &MissionId, expiry: DateTime<Utc>) -> Result<()>;
     /// Closes a mission: revokes every lease and session, records the closing
     /// diff and summary, and applies the terminal transition, in one
     /// transaction.
@@ -125,6 +133,12 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     ) -> Result<TaskRun>;
     fn set_task_run_snapshot(&self, id: &TaskRunId, snapshot: SnapshotId) -> Result<()>;
     fn set_task_run_bundle(&self, id: &TaskRunId, bundle: ArtifactId) -> Result<()>;
+    /// Records which backend actually ran the task.
+    ///
+    /// Written after selection rather than at admission, because the recorded
+    /// backend is evidence: a run that happened in a microVM must not be
+    /// recorded as having happened in a namespace sandbox.
+    fn set_task_run_backend(&self, id: &TaskRunId, backend: BackendKind) -> Result<()>;
 
     // -- policy decisions ------------------------------------------------
     fn record_policy_decision(&self, decision: PolicyDecision) -> Result<()>;
@@ -139,6 +153,17 @@ pub trait Store: Send + Sync + std::fmt::Debug {
     /// "could the task have read it" — which is how the Phase 3 property that a
     /// fetch snapshot contains no application source is asserted.
     fn snapshot_contains(&self, id: &SnapshotId, path: &clyde_core::RepoPath) -> Result<bool>;
+    /// The most recent snapshot built for a mission and target, if any.
+    ///
+    /// Its manifest is what decides each entry's mtime on the next build
+    /// (D27). Keyed by target as well as mission because two targets in one
+    /// mission have independent build outputs, so freshness for one says nothing
+    /// about the other.
+    fn latest_snapshot(
+        &self,
+        mission: &MissionId,
+        target: &clyde_core::RepoPath,
+    ) -> Result<Option<Snapshot>>;
 
     // -- artifacts -------------------------------------------------------
     fn insert_artifact(&self, artifact: Artifact) -> Result<()>;

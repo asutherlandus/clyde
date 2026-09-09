@@ -226,7 +226,11 @@ enum DepsCommand {
 
 #[derive(Debug, Subcommand)]
 enum TaskCommand {
-    /// Request a task as an actor.
+    /// Run a task under an approved mission.
+    ///
+    /// Works on both surfaces (D25): inside a workspace environment it is an
+    /// actor request carrying a session token; on the host it is an operator
+    /// request on the admin socket. Admission is identical either way.
     Run {
         task: String,
         /// Workspace-relative target.
@@ -235,6 +239,19 @@ enum TaskCommand {
         /// Task-specific options, as JSON.
         #[arg(long)]
         options: Option<String>,
+        /// Which mission to run under. Optional while one is active.
+        #[arg(long)]
+        mission: Option<String>,
+        /// Narrows the search for an active mission.
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Ask for stronger isolation than the task policy requires.
+        ///
+        /// Operator-only, and it can only raise: `microvm` runs a task that
+        /// policy would allow in a namespace sandbox inside a guest instead.
+        /// Asking for less than the policy floor is refused (D24).
+        #[arg(long, value_name = "LEVEL")]
+        isolation: Option<String>,
     },
     /// Show a task run's state and outcome.
     Status { task_run: String },
@@ -304,7 +321,18 @@ async fn run(cli: Cli) -> Result<(), ClientError> {
                 .call(methods::DOCTOR, serde_json::json!({}))
                 .await
             {
-                Ok(value) => value,
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert(
+                            "source".to_owned(),
+                            serde_json::Value::String(
+                                "reported by the running clyded, from its loaded configuration"
+                                    .to_owned(),
+                            ),
+                        );
+                    }
+                    value
+                }
                 Err(_) => local_doctor(&state_root),
             };
             output::emit(format, &value, output::doctor);
@@ -732,21 +760,60 @@ async fn task(
             task,
             path,
             options,
+            mission,
+            workspace,
+            isolation,
         } => {
-            // An actor command: it needs a session token, which exists only
-            // inside a sandbox.
-            let token = session_token()?;
-            let mut session = Client::new(actor_socket).session(&token).await?;
-            let arguments = serde_json::json!({
-                "task": task,
-                "path": path,
-                "options": options
-                    .as_deref()
-                    .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-                    .unwrap_or(serde_json::Value::Null),
-            });
-            let value = session.tool("run_task", arguments).await?;
-            output::emit(format, &value, tool_text);
+            let options: serde_json::Value = options
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                .unwrap_or(serde_json::Value::Null);
+            // Both surfaces run tasks (D25). Inside a workspace environment a
+            // session token is present and this is an actor request; on the host
+            // there is none, and the operator surface is the right one. The
+            // choice follows from where the command is running rather than from
+            // a flag, because a human on the host has no token to offer and an
+            // actor cannot reach the admin socket at all.
+            match session_token() {
+                Ok(token) => {
+                    if isolation.is_some() {
+                        // Refused here rather than dropped silently: an actor
+                        // has no way to name an isolation level, and a request
+                        // that appeared to be honoured and was not would be
+                        // worse than one that fails (D25).
+                        return Err(ClientError::Protocol(
+                            "--isolation is an operator option; a task requested with a session token runs at its policy floor".to_owned(),
+                        ));
+                    }
+                    let mut session = Client::new(actor_socket).session(&token).await?;
+                    let value = session
+                        .tool(
+                            "run_task",
+                            serde_json::json!({
+                                "task": task, "path": path, "options": options,
+                            }),
+                        )
+                        .await?;
+                    output::emit(format, &value, tool_text);
+                }
+                Err(_) => {
+                    let mut client = Client::new(admin_socket);
+                    let value = client
+                        .call(
+                            methods::TASK_RUN,
+                            serde_json::json!({
+                                "task": task,
+                                "path": path,
+                                "options": options,
+                                "mission": mission,
+                                "workspace": workspace,
+                                "isolation": isolation,
+                            }),
+                        )
+                        .await?;
+                    output::emit(format, &value, output::key_values);
+                }
+            }
         }
         TaskCommand::Status { task_run } => {
             let mut client = Client::new(admin_socket);
@@ -829,15 +896,52 @@ fn refuse_inside_sandbox(command: &str) -> Result<(), ClientError> {
 }
 
 /// Probes host prerequisites without a running daemon.
+///
+/// It loads the same host and user configuration `clyded` would, rather than
+/// probing bare. The alternative is worse than incomplete: a probe with no
+/// configuration reports every configured path as absent, so an operator whose
+/// runtime roots are correctly configured is told to configure them — a remedy
+/// that cannot work, which is a defect rather than a nicety
+/// ([R10](../../docs/builder/decisions.md#r10-a-remedy-that-cannot-work-is-a-defect-not-a-nicety)).
 fn local_doctor(state_root: &Path) -> serde_json::Value {
+    let paths = clyde_policy::config::host_files::ConfigPaths::discover();
+    let loaded = clyde_policy::config::host_files::load_base(&paths);
+    let sandbox = match &loaded {
+        Ok(loaded) => loaded.config.sandbox.clone(),
+        Err(_) => clyde_policy::config::SandboxConfig::default(),
+    };
+
     let report = clyde_sandbox::probe(&clyde_sandbox::ProbePaths {
-        bwrap: None,
-        firecracker: None,
+        bwrap: sandbox.bwrap.clone(),
+        firecracker: sandbox.firecracker.clone(),
+        mke2fs: sandbox.mke2fs.clone(),
         nix: None,
         state_dir: Some(state_root.to_path_buf()),
+        // The guest images live under the state directory by convention, so a
+        // daemonless probe can still say whether they are there rather than
+        // reporting them as unconfigured.
+        guest_vm_dir: Some(state_root.join("vm")),
+        runtime_roots: sandbox.runtime_roots.clone(),
+        runtime_root_manifests: sandbox.runtime_root_manifests.clone(),
     });
     let mut value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
     if let Some(object) = value.as_object_mut() {
+        // Which report this is, so a row that depends on configuration is not
+        // read as a statement about the host. `clyded` answers with its loaded
+        // configuration; this answers with what it could read from disk.
+        object.insert(
+            "source".to_owned(),
+            serde_json::Value::String(format!(
+                "probed directly, with configuration from {}: clyded is not reachable",
+                paths.host.display()
+            )),
+        );
+        if let Err(error) = &loaded {
+            object.insert(
+                "config_error".to_owned(),
+                serde_json::Value::String(error.to_string()),
+            );
+        }
         object.insert(
             "can_run_workspace".to_owned(),
             serde_json::Value::Bool(report.can_run_workspace()),
@@ -857,6 +961,24 @@ fn local_doctor(state_root: &Path) -> serde_json::Value {
         object.insert(
             "daemon".to_owned(),
             serde_json::Value::String("not running; this report is a local probe".to_owned()),
+        );
+        // Bring-up is exactly when the daemon is not running (R9), and it is also
+        // exactly when someone wants to know what posture they are about to get.
+        // With no daemon there is no `[agent]` section in view, so the honest
+        // observation is that nothing is hosted — which is the weaker answer, and
+        // the right way to be wrong (D26).
+        let posture =
+            clyde_core::posture::derive(&clyde_sandbox::capability::observe_posture(false));
+        object.insert(
+            "posture".to_owned(),
+            serde_json::json!({
+                "posture": posture.name(),
+                "reasons": posture
+                    .reasons()
+                    .iter()
+                    .map(clyde_core::posture::BypassReason::render)
+                    .collect::<Vec<_>>(),
+            }),
         );
     }
     value

@@ -128,9 +128,19 @@ pub struct LimitsConfig {
 pub struct SandboxConfig {
     pub bwrap: Option<PathBuf>,
     pub firecracker: Option<PathBuf>,
+    /// `mke2fs`, from `e2fsprogs`. The microVM backend builds every guest image
+    /// with it, unprivileged (D24).
+    pub mke2fs: Option<PathBuf>,
     pub prlimit: Option<PathBuf>,
     pub systemd_run: Option<PathBuf>,
     pub runtime_roots: BTreeMap<RuntimeRootKind, PathBuf>,
+    /// The `runtimeRootManifests` link farm, holding each root's `store-paths`.
+    ///
+    /// Without it a root's closure is taken to be the root alone. That is wrong
+    /// for every root the flake builds: `buildEnv` produces a tree of symlinks
+    /// into other store paths, so binding only the root leaves every binary a
+    /// dangling symlink inside the sandbox.
+    pub runtime_root_manifests: Option<PathBuf>,
     pub forwarder: Option<PathBuf>,
 }
 
@@ -361,12 +371,14 @@ pub struct ResourceLimitsSection {
 pub struct SandboxSection {
     pub bwrap: Option<PathBuf>,
     pub firecracker: Option<PathBuf>,
+    pub mke2fs: Option<PathBuf>,
     pub prlimit: Option<PathBuf>,
     pub systemd_run: Option<PathBuf>,
     pub forwarder: Option<PathBuf>,
     pub runtime_root_workspace: Option<PathBuf>,
     pub runtime_root_rust: Option<PathBuf>,
     pub runtime_root_fetch: Option<PathBuf>,
+    pub runtime_root_manifests: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -440,6 +452,15 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("configuration was rejected:\n{}", render_rejections(.0))]
     Rejected(Vec<ConfigRejection>),
+    /// The file exists and could not be read.
+    ///
+    /// Distinct from absence on purpose: an operator who believes a file is in
+    /// force must not be told the host is running on defaults by silence.
+    #[error("configuration at {path} could not be read: {detail}")]
+    Unreadable {
+        path: std::path::PathBuf,
+        detail: String,
+    },
 }
 
 fn render_rejections(rejections: &[ConfigRejection]) -> String {
@@ -455,7 +476,7 @@ impl ConfigError {
     pub fn rejections(&self) -> &[ConfigRejection] {
         match self {
             Self::Rejected(rejections) => rejections,
-            Self::Parse(_) => &[],
+            Self::Parse(_) | Self::Unreadable { .. } => &[],
         }
     }
 }
@@ -549,9 +570,13 @@ fn merge(
         if source.may_widen() {
             base.sandbox.bwrap = sandbox.bwrap.or(base.sandbox.bwrap);
             base.sandbox.firecracker = sandbox.firecracker.or(base.sandbox.firecracker);
+            base.sandbox.mke2fs = sandbox.mke2fs.or(base.sandbox.mke2fs);
             base.sandbox.prlimit = sandbox.prlimit.or(base.sandbox.prlimit);
             base.sandbox.systemd_run = sandbox.systemd_run.or(base.sandbox.systemd_run);
             base.sandbox.forwarder = sandbox.forwarder.or(base.sandbox.forwarder);
+            base.sandbox.runtime_root_manifests = sandbox
+                .runtime_root_manifests
+                .or(base.sandbox.runtime_root_manifests);
             for (kind, path) in [
                 (RuntimeRootKind::Workspace, sandbox.runtime_root_workspace),
                 (RuntimeRootKind::Rust, sandbox.runtime_root_rust),
@@ -1480,5 +1505,111 @@ mod tests {
             .expect("an empty file is valid");
         assert_eq!(base, after);
         assert!(record.rejections.is_empty());
+    }
+
+    #[test]
+    fn the_example_configuration_parses() {
+        // The example is the file people copy, so it has to be a working
+        // configuration rather than a sketch. Unknown keys are a hard error
+        // (D14), which means a key renamed in this module and not in the example
+        // turns a copy-paste into a daemon that refuses to start — and the person
+        // hitting it is mid-install, with the least context to diagnose it.
+        let text = include_str!("../../../config.example.toml");
+        let parsed: ConfigFile =
+            toml::from_str(text).expect("config.example.toml parses against the current loader");
+        assert!(
+            parsed.sandbox.is_some(),
+            "the example must name the runtime roots, which is the part nothing defaults"
+        );
+        assert!(
+            parsed.agent.is_none(),
+            "the example is a builder-only deployment: the absence of [agent] is what \
+             makes it one (D23), and enabling it by default would misreport posture"
+        );
+    }
+}
+
+/// Where the host and user configuration files live, and how to load them.
+///
+/// This lives here rather than in the daemon because two binaries need the same
+/// answer: `clyded` loads it at startup, and `clyde doctor` loads it when the
+/// daemon is unreachable — which is exactly when an operator is bringing a host
+/// up ([R9](../../../docs/builder/decisions.md)). A diagnostic that reported
+/// "not configured" for keys it simply could not see would send someone to fix a
+/// configuration that was already correct.
+pub mod host_files {
+    use std::path::{Path, PathBuf};
+
+    use super::{Config, ConfigError, ConfigLoadRecord, ConfigSource, apply_layer};
+
+    /// The host and user configuration paths, discovered from the environment.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ConfigPaths {
+        pub host: PathBuf,
+        pub user: Option<PathBuf>,
+    }
+
+    impl ConfigPaths {
+        pub fn discover() -> Self {
+            let user = std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
+                })
+                .map(|base| base.join("clyde").join("config.toml"));
+            Self {
+                host: std::env::var_os("CLYDE_HOST_CONFIG")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/etc/clyde/config.toml")),
+                user,
+            }
+        }
+    }
+
+    /// The base configuration and the records of how it was loaded.
+    #[derive(Debug, Clone)]
+    pub struct LoadedConfig {
+        pub config: Config,
+        pub records: Vec<ConfigLoadRecord>,
+    }
+
+    /// Loads defaults, then host, then user configuration.
+    ///
+    /// A missing file is not an error; an unreadable or malformed one is,
+    /// because silently running on defaults when an operator believes they
+    /// configured something is exactly the failure D14 exists to prevent.
+    pub fn load_base(paths: &ConfigPaths) -> Result<LoadedConfig, ConfigError> {
+        let mut config = Config::defaults();
+        let mut records = Vec::new();
+        for (path, source) in [
+            (Some(paths.host.clone()), ConfigSource::Host),
+            (paths.user.clone(), ConfigSource::User),
+        ] {
+            let Some(path) = path else { continue };
+            let Some(text) = read_optional(&path)? else {
+                continue;
+            };
+            let (next, record) = apply_layer(config, &text, source)?;
+            config = next;
+            records.push(record);
+        }
+        Ok(LoadedConfig { config, records })
+    }
+
+    /// Reads a configuration file that may legitimately be absent.
+    ///
+    /// A missing file is `None`. An unreadable one is an error rather than an
+    /// absence: the operator believes it is in force, and treating "permission
+    /// denied" as "no configuration" runs the host on defaults without saying
+    /// so.
+    pub fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(ConfigError::Unreadable {
+                path: path.to_path_buf(),
+                detail: error.to_string(),
+            }),
+        }
     }
 }

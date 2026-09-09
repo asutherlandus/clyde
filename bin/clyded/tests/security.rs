@@ -96,6 +96,7 @@ fn every_spec(harness: &support::Harness) -> Vec<SandboxSpec> {
             argv: vec!["/nix/store/runtime-root/bin/cargo".to_owned()],
             stdout_path: PathBuf::from("/var/lib/clyde/logs/out"),
             stderr_path: PathBuf::from("/var/lib/clyde/logs/err"),
+            isolation_floor: None,
         }));
     }
     let _ = mission;

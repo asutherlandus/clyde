@@ -12,18 +12,23 @@ use clyde_api::admin::{self, methods};
 use clyde_api::codec::{CodecError, RequestReader, ResponseWriter};
 use clyde_api::jsonrpc::{Error as RpcError, Request, Response};
 use clyde_api::views::TaskRunView;
+use clyde_core::actor::Principal;
 use clyde_core::approval::Decision;
 use clyde_core::audit::AuditEventKind;
 use clyde_core::baseline::BaselineKey;
 use clyde_core::ids::{ActorId, ApprovalId, MissionId, TaskRunId, WorkspaceId};
+use clyde_core::lease::{Lease, LeaseState};
+use clyde_core::mission::{Mission, MissionState};
 use clyde_core::repo_path::RepoPath;
 use clyde_core::task::TaskType;
 use clyde_core::workspace::{VcsKind, Workspace};
 use clyde_store::AuditFilter;
 use tokio::net::UnixStream;
 
+use crate::actor_api::default_options;
 use crate::daemon::Daemon;
 use crate::error::{DaemonError, Result};
+use crate::tasks::TaskContext;
 use crate::{access, agent, approvals, audit, missions, publish, review, server, tasks};
 
 /// Serves one operator connection.
@@ -38,6 +43,10 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
         }
     };
     let operator = operator_identity(peer);
+    // The principal comes from the peer credential the kernel reported, not from
+    // re-parsing the identity string, so there is no path by which a caller
+    // influences how its own request is attributed (D25).
+    let principal = Principal::Operator { uid: peer.uid };
 
     let (read_half, write_half) = stream.into_split();
     let mut reader = RequestReader::new(read_half);
@@ -68,7 +77,7 @@ pub async fn serve(daemon: Arc<Daemon>, stream: UnixStream) {
             continue;
         }
         let id = request.id.clone();
-        let response = match dispatch(&daemon, &operator, &request).await {
+        let response = match dispatch(&daemon, &operator, &principal, &request).await {
             Ok(value) => Response::success(id, value),
             Err(error) => Response::failure(id, error.to_rpc(&request.method)),
         };
@@ -96,6 +105,7 @@ fn fallback_operator() -> ActorId {
 async fn dispatch(
     daemon: &Arc<Daemon>,
     operator: &ActorId,
+    principal: &Principal,
     request: &Request,
 ) -> Result<serde_json::Value> {
     match request.method.as_str() {
@@ -123,6 +133,7 @@ async fn dispatch(
         methods::DEPS_IMPORT => import_bundle(daemon, request),
         methods::DEPS_LIST => list_bundles(daemon),
         methods::DEPS_CONFIRM_INVENTORY => confirm_inventory(daemon, operator, request),
+        methods::TASK_RUN => run_task(daemon, principal, request).await,
         methods::TASK_LIST => list_tasks(daemon, request),
         methods::TASK_STATUS => task_status(daemon, request),
         methods::TASK_LOGS => task_logs(daemon, request),
@@ -677,6 +688,22 @@ fn task_logs(daemon: &Arc<Daemon>, request: &Request) -> Result<serde_json::Valu
 async fn doctor(daemon: &Arc<Daemon>) -> Result<serde_json::Value> {
     let mut report = serde_json::to_value(&daemon.host).unwrap_or(serde_json::Value::Null);
     if let Some(object) = report.as_object_mut() {
+        // Posture is a first-class line rather than a note about tooling
+        // hygiene: it is the difference between what the builder claims and what
+        // D1 promised, and the weaker mode must never be the one you are
+        // silently in (D26).
+        object.insert(
+            "posture".to_owned(),
+            serde_json::json!({
+                "posture": daemon.posture.name(),
+                "reasons": daemon
+                    .posture
+                    .reasons()
+                    .iter()
+                    .map(clyde_core::posture::BypassReason::render)
+                    .collect::<Vec<_>>(),
+            }),
+        );
         object.insert(
             "can_run_workspace".to_owned(),
             serde_json::Value::Bool(daemon.host.can_run_workspace()),
@@ -709,6 +736,121 @@ async fn doctor(daemon: &Arc<Daemon>) -> Result<serde_json::Value> {
 
 fn rpc(error: RpcError) -> DaemonError {
     DaemonError::invalid(error.message)
+}
+
+/// Runs a task on the operator surface (D25).
+///
+/// The only difference from the actor surface is who authenticated and what the
+/// record says. Admission is the same call, against the same lease, policy,
+/// budget, and access baseline — so a task reachable here is reachable there and
+/// the reverse, and neither surface has a task type of its own.
+async fn run_task(
+    daemon: &Arc<Daemon>,
+    principal: &Principal,
+    request: &Request,
+) -> Result<serde_json::Value> {
+    #[derive(serde::Deserialize)]
+    struct Params {
+        /// Optional: with one active mission per workspace (D16) there is
+        /// usually nothing to disambiguate.
+        #[serde(default)]
+        mission: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
+        task: String,
+        path: String,
+        #[serde(default)]
+        options: serde_json::Value,
+        /// An operator asking for stronger isolation than the policy floor.
+        ///
+        /// Operator-only, and it can only raise (D25).
+        #[serde(default)]
+        isolation: Option<String>,
+    }
+    let params: Params = request.parse_params().map_err(rpc)?;
+    let task = TaskType::parse(&params.task)?;
+    let path = RepoPath::parse(&params.path)?;
+    let isolation_floor = params
+        .isolation
+        .as_deref()
+        .map(|text| {
+            clyde_core::classification::IsolationLevel::parse(text).ok_or_else(|| {
+                // An unrecognised level is a refusal rather than a fallback to
+                // the policy floor: a typo must not quietly run the task at
+                // weaker isolation than the operator believes they asked for.
+                DaemonError::invalid(format!(
+                    "{text:?} is not an isolation level; use namespace-sandbox or microvm"
+                ))
+            })
+        })
+        .transpose()?;
+
+    let mission = resolve_operator_mission(daemon, params.mission, params.workspace)?;
+    let lease = primary_lease(daemon, &mission.id)?;
+    let workspace = daemon.store.get_workspace(&mission.workspace)?;
+    let config = daemon.config_for(&workspace.root)?;
+
+    let options = default_options(task, &params.options)?;
+    let context = TaskContext {
+        mission,
+        lease,
+        workspace,
+        config,
+        isolation_floor,
+        principal: principal.clone(),
+    };
+    let run = tasks::run_task(daemon, &context, task, path, options).await?;
+    Ok(serde_json::to_value(TaskRunView::new(&run)).unwrap_or(serde_json::Value::Null))
+}
+
+/// Finds the mission an operator meant.
+///
+/// Named explicitly wins. Otherwise there must be exactly one active mission —
+/// ambiguity is an error rather than a guess, because running a task against the
+/// wrong mission charges the wrong budget and uses the wrong baseline.
+fn resolve_operator_mission(
+    daemon: &Arc<Daemon>,
+    mission: Option<String>,
+    workspace: Option<String>,
+) -> Result<Mission> {
+    if let Some(id) = mission {
+        return Ok(daemon.store.get_mission(&MissionId::parse(id)?)?);
+    }
+    let wanted = workspace.map(WorkspaceId::parse).transpose()?;
+    let mut active: Vec<Mission> = daemon
+        .store
+        .list_missions(wanted.as_ref())?
+        .into_iter()
+        .filter(|mission| mission.state == MissionState::Active)
+        .collect();
+    match active.len() {
+        1 => Ok(active.remove(0)),
+        0 => Err(DaemonError::not_found(
+            "no active mission; create and approve one first",
+        )),
+        _ => Err(DaemonError::invalid(format!(
+            "{} missions are active; name one with --mission: {}",
+            active.len(),
+            active
+                .iter()
+                .map(|mission| mission.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// The mission's primary lease: the one that is not derived and not superseded.
+///
+/// An operator drives the primary lease. A derived lease belongs to a sub-agent
+/// and is that sub-agent's to spend.
+fn primary_lease(daemon: &Arc<Daemon>, mission: &MissionId) -> Result<Lease> {
+    daemon
+        .store
+        .list_leases(mission)?
+        .into_iter()
+        .find(|lease| lease.parent.is_none() && lease.state != LeaseState::Superseded)
+        .ok_or_else(|| DaemonError::not_found("this mission has no active lease"))
 }
 
 #[cfg(test)]
@@ -768,6 +910,7 @@ mod tests {
                         | methods::DEPS_IMPORT
                         | methods::DEPS_LIST
                         | methods::DEPS_CONFIRM_INVENTORY
+                        | methods::TASK_RUN
                         | methods::TASK_LIST
                         | methods::TASK_STATUS
                         | methods::TASK_LOGS

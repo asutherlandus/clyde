@@ -40,5 +40,5 @@ pub use repo_path::RepoPath;
 pub use entities::classification;
 pub use entities::{
     actor, approval, artifact, audit, baseline, broker, budget, decision, egress, lease, mission,
-    session, snapshot, task, workspace,
+    posture, session, snapshot, task, workspace,
 };

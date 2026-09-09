@@ -61,6 +61,18 @@ pub enum SandboxError {
 
     #[error("runtime root {root:?} is not usable: {detail}")]
     RuntimeRoot { root: PathBuf, detail: String },
+
+    /// A guest image could not be built or is unusable.
+    ///
+    /// Always the host's fault rather than the task's: an image is Clyde's to
+    /// construct, and a task cannot influence whether `mke2fs` succeeds.
+    #[error("a guest image could not be built: {detail}")]
+    Image { detail: String },
+
+    /// The guest channel failed, or the guest reported that it could not run
+    /// the task.
+    #[error("the microVM guest channel failed: {detail}")]
+    GuestChannel { detail: String },
 }
 
 impl SandboxError {

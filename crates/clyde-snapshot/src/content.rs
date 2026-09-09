@@ -18,6 +18,32 @@ use crate::error::{Result, SnapshotError};
 /// mount table cannot rewrite shared content through a hardlink.
 const BLOB_MODE: u32 = 0o444;
 
+/// Which mtime a materialised file should carry (D27).
+///
+/// Cargo decides freshness for local sources by comparing source mtimes against
+/// build output mtimes, and has no content-hash freshness mode on the stable
+/// toolchain. So a snapshot must present mtimes that agree with what actually
+/// changed, in both directions:
+///
+/// - an unchanged file must keep an mtime *older* than the build outputs, or
+///   every run rebuilds everything;
+/// - a changed file must carry one *newer* than them, or cargo skips work it
+///   needed to do and the task reports a pass for a tree it did not build.
+///
+/// The second is the dangerous one. Content addressing makes it reachable by an
+/// ordinary `git checkout --`: reverting a file re-links a blob ingested
+/// earlier, whose mtime predates the outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// The content is unchanged since this mission's previous snapshot. Share the
+    /// blob's inode and therefore its mtime.
+    Unchanged,
+    /// The content differs from the previous snapshot in either direction. Give
+    /// it a materialisation-time mtime of its own, which needs a copy: a hardlink
+    /// cannot carry an mtime that differs from the blob's.
+    Changed,
+}
+
 /// A content-addressed blob store.
 #[derive(Debug, Clone)]
 pub struct ContentStore {
@@ -85,11 +111,18 @@ impl ContentStore {
     ///
     /// Returns which strategy was used, so the snapshot record states how it was
     /// built rather than assuming.
+    ///
+    /// `freshness` decides the mtime the task will see, and it is not an
+    /// optimisation hint (D27): a [`Freshness::Changed`] entry is copied
+    /// precisely *because* a hardlink cannot carry an mtime of its own, and a
+    /// [`Freshness::Unchanged`] entry is hardlinked precisely because sharing the
+    /// blob's inode is what preserves the mtime the last run saw.
     pub fn materialise(
         &self,
         digest: &Digest,
         tree: &Path,
         relative: &Path,
+        freshness: Freshness,
     ) -> Result<MaterialisationKind> {
         let source = self.blob_path(digest);
         let target = tree.join(relative);
@@ -98,17 +131,43 @@ impl ContentStore {
                 .map_err(|error| SnapshotError::io("creating a snapshot directory", error))?;
         }
         let _ = std::fs::remove_file(&target);
+        if freshness == Freshness::Changed {
+            return self.copy_fresh(&source, &target).map(|()| {
+                // A deliberate copy, not a fallback. The record says `Copy`
+                // either way; what differs is why, and the reason is that this
+                // file changed.
+                MaterialisationKind::Copy
+            });
+        }
         match std::fs::hard_link(&source, &target) {
             Ok(()) => Ok(MaterialisationKind::Hardlink),
             Err(_) => {
                 // Falls back to copying: correct everywhere, slower, and the
                 // record says which happened.
-                std::fs::copy(&source, &target)
-                    .map_err(|error| SnapshotError::io("copying into a snapshot", error))?;
-                set_mode(&target, BLOB_MODE)?;
+                //
+                // The copied file must still carry the blob's mtime. `fs::copy`
+                // carries permissions and not timestamps, so without this the
+                // fallback would stamp every file with the copy time and cargo
+                // would rebuild the world on every run — a silent change of
+                // performance class, not merely a slower path (D27).
+                self.copy_inheriting_mtime(&source, &target)?;
                 Ok(MaterialisationKind::Copy)
             }
         }
+    }
+
+    /// Copies a blob and gives the copy an mtime of its own, taken now.
+    fn copy_fresh(&self, source: &Path, target: &Path) -> Result<()> {
+        copy_with_mtime(source, target, std::time::SystemTime::now())
+    }
+
+    /// Copies a blob and carries its mtime across, so the copy is
+    /// indistinguishable from the hardlink it stands in for.
+    fn copy_inheriting_mtime(&self, source: &Path, target: &Path) -> Result<()> {
+        let modified = std::fs::metadata(source)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| SnapshotError::io("reading a blob's mtime", error))?;
+        copy_with_mtime(source, target, modified)
     }
 
     /// Removes a materialised tree. The blobs it shared stay in the store.
@@ -133,6 +192,33 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .map_err(|error| SnapshotError::io("setting file permissions", error))
+}
+
+/// Copies a blob and stamps the copy with an explicit mtime.
+///
+/// The mode dance is not incidental: blobs are stored `0444`, `fs::copy` carries
+/// permissions across, and `futimens` needs the file opened for writing. So the
+/// copy is made writable, stamped, and then sealed read-only like every other
+/// entry in a snapshot tree.
+fn copy_with_mtime(source: &Path, target: &Path, modified: std::time::SystemTime) -> Result<()> {
+    std::fs::copy(source, target)
+        .map_err(|error| SnapshotError::io("copying into a snapshot", error))?;
+    set_mode(target, 0o600)?;
+    set_modified(target, modified)?;
+    set_mode(target, BLOB_MODE)
+}
+
+/// Sets a file's modification time.
+///
+/// Done before the read-only mode is applied, since a blob is stored `0444` and
+/// the timestamp is what a build tool actually reads to decide freshness.
+fn set_modified(path: &Path, modified: std::time::SystemTime) -> Result<()> {
+    let file = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .map_err(|error| SnapshotError::io("opening a snapshot file to set its mtime", error))?;
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .map_err(|error| SnapshotError::io("setting a snapshot file's mtime", error))
 }
 
 /// Recursive size, saturating rather than overflowing.
@@ -211,7 +297,7 @@ mod tests {
 
         let tree = store.tree_path("s-blake3:abc");
         let kind = store
-            .materialise(&digest, &tree, Path::new("src/a.rs"))
+            .materialise(&digest, &tree, Path::new("src/a.rs"), Freshness::Unchanged)
             .unwrap();
         let target = tree.join("src/a.rs");
         assert!(target.exists());
@@ -239,7 +325,7 @@ mod tests {
         let (digest, _) = store.store_file(&source).unwrap();
         let tree = store.tree_path("s-blake3:abc");
         store
-            .materialise(&digest, &tree, Path::new("a.rs"))
+            .materialise(&digest, &tree, Path::new("a.rs"), Freshness::Unchanged)
             .unwrap();
         store.remove_tree("s-blake3:abc").unwrap();
         assert!(!tree.exists());

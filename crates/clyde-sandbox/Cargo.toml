@@ -9,9 +9,11 @@ publish = false
 
 [dependencies]
 clyde-core.workspace = true
+clyde-guest-api.workspace = true
 clyde-policy.workspace = true
 chrono.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["process", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

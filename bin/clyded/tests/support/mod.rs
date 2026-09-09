@@ -87,9 +87,11 @@ impl Harness {
         let mut host = String::new();
         if toolchain {
             let root = toolchain_runtime_root(dir.path());
+            let manifests = toolchain_manifests(dir.path(), &root);
             host.push_str(&format!(
-                "[sandbox]\nruntime_root_rust = \"{}\"\n\n",
-                root.display()
+                "[sandbox]\nruntime_root_rust = \"{}\"\nruntime_root_manifests = \"{}\"\n\n",
+                root.display(),
+                manifests.display()
             ));
         }
         // Push configuration is host configuration: a repository cannot widen
@@ -186,18 +188,54 @@ impl Harness {
         .expect("a human confirms it")
     }
 
-    /// A task context for running work.
+    /// A task context for running work, as a hosted actor would.
     pub fn context(
         &self,
         workspace: &Workspace,
         mission: &Mission,
         lease: &Lease,
     ) -> clyded::tasks::TaskContext {
+        self.context_as(
+            workspace,
+            mission,
+            lease,
+            clyde_core::actor::Principal::Session {
+                session_actor: lease.actor.clone(),
+                hosted: true,
+            },
+        )
+    }
+
+    /// The same context as a human operator on the admin socket would produce
+    /// (D25). Only the principal differs, which is the property worth testing.
+    pub fn operator_context(
+        &self,
+        workspace: &Workspace,
+        mission: &Mission,
+        lease: &Lease,
+    ) -> clyded::tasks::TaskContext {
+        self.context_as(
+            workspace,
+            mission,
+            lease,
+            clyde_core::actor::Principal::Operator { uid: 1000 },
+        )
+    }
+
+    fn context_as(
+        &self,
+        workspace: &Workspace,
+        mission: &Mission,
+        lease: &Lease,
+        principal: clyde_core::actor::Principal,
+    ) -> clyded::tasks::TaskContext {
         clyded::tasks::TaskContext {
             mission: mission.clone(),
             lease: lease.clone(),
             workspace: workspace.clone(),
             config: self.config(workspace),
+            isolation_floor: None,
+            principal,
         }
     }
 
@@ -234,6 +272,30 @@ pub fn toolchain_runtime_root(into: &Path) -> PathBuf {
     root
 }
 
+/// Writes the closure manifest for [`toolchain_runtime_root`].
+///
+/// The harness root links to the host toolchain, so its closure is the root plus
+/// wherever those links land. Without this the daemon refuses the run — correctly,
+/// since a root whose programs point outside its bound closure would fail with an
+/// `execvp` ENOENT once a real backend bound it.
+pub fn toolchain_manifests(into: &Path, root: &Path) -> PathBuf {
+    let dir = into.join("manifests").join("rust");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut paths = vec![root.to_path_buf()];
+    for program in ["cargo", "rustc"] {
+        if let Ok(target) = root.join("bin").join(program).canonicalize() {
+            // The store path, not the binary: `/nix/store/<hash>-cargo-x.y.z`.
+            paths.extend(target.ancestors().nth(1).map(Path::to_path_buf));
+        }
+    }
+    let listed: Vec<String> = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    std::fs::write(dir.join("store-paths"), listed.join("\n")).unwrap();
+    into.join("manifests")
+}
+
 fn which(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -255,9 +317,13 @@ pub fn capable_host() -> clyde_sandbox::HostReport {
         user_namespaces: available("test harness"),
         cgroup_v2: available("test harness"),
         cgroup_delegation: available("test harness"),
+        session_bus: available("test harness"),
+        runtime_roots: available("test harness"),
         kvm: available("test harness"),
         bubblewrap: available("test harness"),
         firecracker: available("test harness"),
+        mke2fs: available("test harness"),
+        guest_images: available("test harness"),
         nix: available("test harness"),
         hardlinks: available("test harness"),
         known_limitations: Vec::new(),

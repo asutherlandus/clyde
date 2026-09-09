@@ -15,6 +15,7 @@ pub mod decision;
 pub mod egress;
 pub mod lease;
 pub mod mission;
+pub mod posture;
 pub mod session;
 pub mod snapshot;
 pub mod task;

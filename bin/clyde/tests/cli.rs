@@ -332,12 +332,20 @@ fn operator_commands_refuse_inside_a_sandbox_and_say_why() {
 }
 
 #[test]
-fn an_actor_command_on_the_host_points_at_the_operator_commands() {
+fn task_run_on_the_host_reaches_the_operator_surface() {
+    // D25: `task run` from the host is an operator request, not a refusal. With
+    // no mission to run under it fails on *that*, which is the proof it got past
+    // the surface check and into admission rather than being turned away for
+    // holding no token.
     let daemon = Daemon::start("actor");
     let message = daemon.failure(&["task", "run", "rust.check", "crates/core"]);
     assert!(
-        message.contains("operator commands"),
-        "a host user needs to be told what to use instead: {message}"
+        message.contains("no active mission"),
+        "a host user reaches admission and is told what is actually missing: {message}"
+    );
+    assert!(
+        !message.contains("session token"),
+        "the host path must not ask for a token it can never have: {message}"
     );
 }
 

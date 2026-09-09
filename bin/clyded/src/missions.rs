@@ -457,13 +457,38 @@ pub fn renew(
     additional_task_runs: Option<u32>,
 ) -> Result<Lease> {
     let extension = HumanDuration::parse(extend_by)?;
+    let now = Utc::now();
+
+    // A terminal mission is not renewable. Closing or revoking a mission
+    // revokes its leases, so without this check a renewal would issue an active
+    // replacement for a revoked lease and hand back authority a human
+    // deliberately ended.
+    let mission_record = daemon.store.get_mission(mission)?;
+    if mission_record.state.is_terminal() {
+        return Err(DaemonError::invalid(format!(
+            "this mission is {} and cannot be renewed; a terminal state is final. Create a new mission instead",
+            mission_record.state
+        )));
+    }
+
     let leases = daemon.store.list_leases(mission)?;
     let current = leases
         .into_iter()
         .find(|lease| lease.parent.is_none() && lease.state != LeaseState::Superseded)
         .ok_or_else(|| DaemonError::not_found("this mission has no renewable lease"))?;
 
-    let expires_at = current.expires_at
+    if current.state == LeaseState::Revoked {
+        return Err(DaemonError::invalid(
+            "this mission's lease is revoked and cannot be renewed. Create a new mission instead",
+        ));
+    }
+
+    // The extension runs from the later of now and the current expiry. An
+    // unexpired lease loses none of its remaining time; an expired one gets a
+    // lease that is actually valid, rather than one born expired because the
+    // extension was added to a moment that has already passed.
+    let base = current.expires_at.max(now);
+    let expires_at = base
         + Duration::from_std(extension.as_duration())
             .map_err(|_| DaemonError::invalid("the extension is too large"))?;
     let mut budget = current.budget;
@@ -490,15 +515,12 @@ pub fn renew(
     })?;
 
     // The mission's own expiry moves with the lease, or the lease would outlive
-    // the envelope the human approved.
-    let mut mission_record = daemon.store.get_mission(mission)?;
+    // the envelope the human approved — and a mission that expires before its
+    // lease refuses work the lease still permits.
     if renewed.expires_at > mission_record.expiry {
-        mission_record.expiry = renewed.expires_at;
-        // Stored through the transition path so the record stays consistent;
-        // the state itself is unchanged.
         daemon
             .store
-            .set_mission_cache_dir(mission, mission_record.cache_dir.clone())?;
+            .set_mission_expiry(mission, renewed.expires_at)?;
     }
 
     audit::record(

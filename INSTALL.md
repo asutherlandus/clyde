@@ -7,15 +7,36 @@ Read this alongside [`clyde doctor`](#step-5-check-the-host), which is the
 authority on whether a host has what it needs. Everything here is background for
 what `doctor` reports and remedies for what it refuses.
 
-**Before you start, two things are true and worth knowing up front:**
+**Before you start, three things are true and worth knowing up front:**
 
 - **Bubblewrap is the working backend.** It runs every MVP task except dependency
-  resolution. Follow steps 1–7 and you have a working install.
-- **Firecracker cannot be brought up yet.** Its host prerequisites are real and
-  documented in [step 8](#step-8-firecracker), but three pieces of the guest side
-  are unimplemented, so `rust.resolve-deps` stays refused on every host. The
-  section says exactly what is missing rather than offering a recipe that stops
-  halfway.
+  resolution, and a human drives the whole pipeline from the host with no agent
+  configured anywhere
+  ([D25](docs/builder/decisions.md#d25-task-execution-has-an-operator-surface-on-the-admin-socket)).
+  Follow steps 1–7 and you have a working install. Note that this is
+  the scaffold rather than the destination: the microVM backend is meant to be the
+  default for every build task
+  ([D24](docs/builder/decisions.md#d24-firecracker-is-the-default-backend-for-build-execution)),
+  and until it is, build tasks run on a weaker boundary than the design intends.
+- **The microVM backend can be brought up, per run.** [Step 8](#step-8-firecracker)
+  builds the guest from the flake and an operator raises a single task into a
+  guest with `clyde task run … --isolation microvm`. It is not the default yet,
+  and three pieces are still missing — the vsock egress bridge, guest-side learn
+  mode, and the raised policy floor — so `rust.resolve-deps` stays refused. No
+  test in this repository has booted a guest;
+  [the bring-up guide](docs/builder/microvm-bring-up.md) says what to read when
+  one does not.
+- **This install gives you `advisory` posture, and Clyde now says so.** Clyde
+  constrains what runs *through* it — snapshots, no network, no credentials,
+  baselines — but nothing here stops you or an agent on this host from running
+  `cargo` directly and bypassing the pipeline entirely. `clyde doctor` reports
+  that as a posture line naming each specific bypass, every task run records the
+  posture it ran under, and mission review states it
+  ([D26](docs/builder/decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)).
+  Closing the bypass is the warden — the agent-harness half of the MVP — and it
+  is not built
+  ([D23](docs/builder/decisions.md#d23-the-mvp-splits-into-the-builder-and-the-warden)).
+  That is worth understanding before you rely on it, not after.
 
 ## Contents
 
@@ -38,8 +59,8 @@ what `doctor` reports and remedies for what it refuses.
 | OS | Linux. Clyde is Linux-first and uses user namespaces, cgroup v2, and seccomp directly. |
 | Kernel | cgroup v2 unified hierarchy; unprivileged user namespaces permitted. |
 | Nix | With flakes enabled. The flake is the source of truth for tooling (D6, and [AGENTS.md](AGENTS.md)); nothing here assumes a host-global toolchain. |
-| Filesystem | Hardlink support on the state directory, or snapshots fall back to copying. |
-| For Firecracker only | `/dev/kvm`, and membership of the `kvm` group. |
+| Filesystem | Hardlink support on the state directory, where the blob store and snapshot trees both live. Without it, snapshots fall back to copying: slower per run, but still correct and still incremental, because the copy carries the blob's mtime ([D27](docs/builder/decisions.md#d27-snapshot-materialisation-preserves-change-ordering-in-mtime)). `clyde doctor` reports which you have. |
+| For Firecracker | `/dev/kvm`, membership of the `kvm` group, and `mke2fs` from `e2fsprogs`. Today the microVM backend is opt-in per run with `--isolation microvm`; under [D24](docs/builder/decisions.md#d24-firecracker-is-the-default-backend-for-build-execution) it becomes the default requirement for every build task. |
 
 Everything else — the Rust toolchain, bubblewrap, sqlite, git — comes from the
 devShell. Do not install them globally; a host-global `cargo` on `PATH` is
@@ -106,6 +127,20 @@ for root in workspace rust fetch; do
 done
 ```
 
+And the closure manifests, which are what make a root's closure bindable:
+
+```sh
+sudo ln -sfn "$(nix build .#runtimeRootManifests --print-out-paths --no-link)" \
+  /nix/var/nix/gcroots/clyde/manifests
+```
+
+This one is not optional. A runtime root is a `buildEnv` — a tree of symlinks
+into other store paths — so without the manifest the daemon binds the root and
+nothing it points at, every binary inside the sandbox is a dangling symlink, and
+the task dies with `bwrap: execvp /nix/var/.../bin/cargo: No such file or
+directory`. clyded refuses the run with a diagnostic naming this key rather than
+letting it reach that point.
+
 Then configuration can name the stable symlinks instead of raw store paths.
 
 Verify the workspace root has no build toolchain in it — this is the assertion
@@ -129,7 +164,19 @@ unshare --user --map-root-user true                    # fails if blocked
 The restriction applies to any binary without a permitting AppArmor profile, and
 a nix-store `bwrap` has none.
 
-### The narrow fix: a profile for the store path
+Do not read the sysctl as the whole answer. Ubuntu 24.04 ships
+`/etc/apparmor.d/bwrap-userns-restrict` **already loaded and enforcing**, so its
+own `/usr/bin/bwrap` keeps working while the sysctl reads `1` and the nix-store
+`bwrap` is denied. That mixed signal is the expected shape of the problem, not a
+contradiction. Test the binary Clyde will actually run:
+
+```sh
+"$(nix develop --command bash -c 'echo "$CLYDE_BWRAP"')" \
+  --unshare-user --uid 0 --gid 0 --ro-bind / / /bin/true \
+  && echo "the nix bwrap can unshare"
+```
+
+### The minimal fix: a profile for the store path
 
 Store paths are content-addressed and change whenever the toolchain moves, so the
 profile needs a glob:
@@ -147,21 +194,67 @@ profile nix-bwrap /nix/store/*/bin/bwrap flags=(unconfined) {
 
 ```sh
 sudo apparmor_parser -r /etc/apparmor.d/nix-bwrap
-unshare --user --map-root-user true && echo "user namespaces work"
 ```
+
+Verify with the `bwrap` check above, not with `unshare` — a profile naming
+`bwrap` does nothing for `/usr/bin/unshare`, which stays denied.
 
 It lives in `/etc`, so it survives a reboot.
 
-Check first whether your distribution already ships a profile for its own
-`bwrap` — adapting that one is lower-risk than the sketch above:
+Note the trade-off honestly: the glob permits `userns create` for any
+`bwrap`-shaped path in the nix store, not just the one you configured. Narrowing
+it to a single store path means updating the profile on every toolchain bump.
+
+### Better: adapt the profile your distribution ships
+
+If your distribution already carries a `bwrap` profile, start from it rather than
+from the sketch above:
 
 ```sh
 ls /etc/apparmor.d/ | grep -iE 'bwrap|userns'
 ```
 
-Note the trade-off honestly: the glob permits `userns create` for any
-`bwrap`-shaped path in the nix store, not just the one you configured. Narrowing
-it to a single store path means updating the profile on every toolchain bump.
+Ubuntu's `bwrap-userns-restrict` is the profile to copy. It is tighter than the
+sketch, which leaves bwrap's children unconfined: it grants `allow capability` to
+bwrap itself — where the uid-map, mount and `pivot_root` work happens, all before
+the payload is exec'd — and then `px`-transitions the payload into a stacked child
+profile carrying `audit deny capability`, so bwrap cannot be used to launder the
+userns restriction. Clyde's payload runs as uid 1000 under seccomp and
+no-new-privs and needs no capability, so the child profile costs nothing. The one
+thing it forbids is a nested `bwrap` inside the sandbox, which the builder does
+not do.
+
+Two changes are required, and one of them is not optional:
+
+1. **Re-attach it** to `/nix/store/*/bin/bwrap`. AppArmor attaches by executable
+   path; the shipped attachment is the literal `/usr/bin/bwrap`.
+2. **Rename both profiles.** Profile names are global across
+   `/etc/apparmor.d/`, so a second `profile bwrap` or `profile unpriv_bwrap`
+   collides with the file still shipped by the distribution. Rename the parent,
+   the child, and the `px` target that names them both.
+
+```
+# /etc/apparmor.d/nix-bwrap — Ubuntu's bwrap-userns-restrict, re-attached
+abi <abi/4.0>,
+include <tunables/global>
+
+profile nix_bwrap /nix/store/*/bin/bwrap flags=(attach_disconnected) {
+  # …body copied verbatim from /etc/apparmor.d/bwrap-userns-restrict…
+  allow px /** -> nix_bwrap//&unpriv_nix_bwrap,
+  include if exists <local/nix_bwrap>
+}
+
+profile unpriv_nix_bwrap flags=(attach_disconnected) {
+  # …body copied verbatim…
+  allow pix /** -> &unpriv_nix_bwrap,
+  audit deny capability,
+  include if exists <local/unpriv_nix_bwrap>
+}
+```
+
+Ignore the "disabled by default … use `aa-enforce` to enable it" comment in the
+shipped file's header: it is upstream's, and Ubuntu 24.04 ships the profile
+enabled. Reload and re-run the `bwrap` check from the top of this step.
 
 ### The blunt alternative
 
@@ -181,7 +274,7 @@ So a `PATH` change cannot silently select a different `bwrap` than the one the
 profile permits:
 
 ```sh
-nix develop --command command -v bwrap
+nix develop --command bash -c 'echo "$CLYDE_BWRAP"'
 ```
 
 Put that path in `sandbox.bwrap` (step 6).
@@ -196,16 +289,33 @@ On a systemd machine it usually works already, because `user@$UID.service` is
 delegated by default:
 
 ```sh
-systemctl --user show user@$(id -u).service -p Delegate     # want Delegate=yes
+systemctl show user@$(id -u).service -p Delegate     # want Delegate=yes
 test -w /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control \
   && echo delegated
 ```
 
-The controllers Clyde needs are `memory`, `pids`, and `cpu`:
+The controllers Clyde needs are `memory`, `pids`, and `cpu`, and the file that
+answers that is the one inside the delegated cgroup — not the root set, which
+says what the kernel has rather than what reaches you:
 
 ```sh
-cat /sys/fs/cgroup/cgroup.controllers
+slice=/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service
+cat $slice/cgroup.controllers        # what is available to the subtree
+cat $slice/cgroup.subtree_control    # what is enabled for children
 ```
+
+If the two checks disagree — `Delegate=yes` but nothing writable, or the
+reverse — trust the writable test. It is what Clyde probes: `doctor` opens the
+`cgroup.subtree_control` of clyded's own cgroup, taken from `/proc/self/cgroup`,
+and never reads the `Delegate=` property. The property is a statement of intent
+by the unit that spawned the session; the writable file is the delegation
+itself.
+
+Note also that the query above has no `--user`. `user@$UID.service` is a *system*
+unit, so `systemctl --user show user@$UID.service` asks the per-user manager
+about a unit it does not manage and cannot see; `show` answers for an unknown
+unit with property defaults, and `Delegate` defaults to `no`. That spelling
+prints `Delegate=no` on every host, delegated or not.
 
 Two cases where delegation is missing:
 
@@ -235,6 +345,8 @@ What you want to see:
 ok   user namespaces      unprivileged user namespaces permitted (max 15000)
 ok   cgroup v2            cgroup v2 with controllers: …, cpu, …, memory, pids, …
 ok   cgroup delegation    cgroup v2 delegated at /sys/fs/cgroup/user.slice/…
+ok   session bus          user bus at /run/user/1000/bus
+ok   runtime roots        closures bound — fetch: 41 programs, 62 store paths; rust: …
 ok   bubblewrap           bubblewrap at /nix/store/…/bin/bwrap
 ok   nix                  nix at …
 ok   hardlinks            hardlinks supported on …
@@ -246,10 +358,17 @@ NO    brokered publishing
 ```
 
 `ok` on the first two summary lines is the meaningful signal: it means clyded will
-admit a bubblewrap-backed task rather than refuse it on host capability. `kvm`
-and `firecracker` staying absent is expected — see
-[step 8](#step-8-firecracker) — and `brokered publishing` turns `ok` once
+admit a bubblewrap-backed task rather than refuse it on host capability. `kvm`,
+`firecracker`, `mke2fs`, and `guest images` stay absent until you do
+[step 8](#step-8-firecracker), and `brokered publishing` turns `ok` once
 `clyde-brokerd` is running ([step 7](#step-7-run-the-daemon-and-the-broker)).
+
+Once [D26](docs/builder/decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)
+lands, `doctor` also reports the **posture** and, when it is `advisory`, names the
+specific bypass — a `cargo` on `PATH`, no hosted actor, or both. That line is not
+a tooling-hygiene warning. It is the difference between "project code cannot run
+outside Clyde" and "project code happens not to have run outside Clyde yet", and
+it is the one line worth reading before deciding what this install guarantees.
 
 ## Step 6: host configuration
 
@@ -269,64 +388,22 @@ A missing file is fine. An unreadable or malformed one is an error, and unknown
 keys are rejected rather than ignored — a typo in a policy file must not read as
 a restriction that silently is not there.
 
-```toml
-# /etc/clyde/config.toml
+[`config.example.toml`](config.example.toml) in the repository root is a complete
+host configuration for a builder-only deployment, commented with why each setting
+exists. Copy it and replace every `REPLACE_ME`:
 
-[sandbox]
-# Pin the exact bwrap the AppArmor profile permits.
-bwrap = "/nix/store/…-bubblewrap-0.11.2/bin/bwrap"
-# The GC-rooted symlinks from step 2.
-runtime_root_workspace = "/nix/var/nix/gcroots/clyde/workspace"
-runtime_root_rust      = "/nix/var/nix/gcroots/clyde/rust"
-runtime_root_fetch     = "/nix/var/nix/gcroots/clyde/fetch"
-# Bind-mounted read-only into any sandbox with an egress profile.
-forwarder = "/usr/local/libexec/clyde-forward"
-
-[agent]
-# Resolved from inside the workspace runtime root, never from PATH (D6).
-command = "claude"
-args = []
-
-[egress]
-# Hosts the `model-api` profile may reach. This is the only profile for which
-# Clyde terminates TLS, so it is deliberately explicit (D7 amendment, D11).
-model_api_hosts = ["api.anthropic.com"]
-model_api_auth_header = "authorization"
-
-[push]
-# Without these, every push is refused before a human is even asked.
-remotes = ["origin"]
-branch_patterns = ["feature/*", "clyde/*"]
-# Refused whatever the allowlist says.
-protected_branch_patterns = ["main", "master", "release/*"]
-
-[broker]
-socket = "/run/clyde/brokerd.sock"
-allow_ssh_agent = false
-ssh_key = "/home/you/.ssh/id_ed25519_clyde"
-
-[broker.remotes]
-# The broker resolves a remote from here and never from the workspace
-# repository's own configuration, which is attacker-controlled content.
-origin = "git@github.com:you/example.git"
-
-[limits.build]
-max_wall_clock = "20m"
-max_memory_bytes = 8589934592
-max_cpu_percent = 400
-
-[mission.defaults]
-max_expiry = "4h"
-max_task_runs = 200
-
-[fetch]
-# Nothing is pre-approved by default: the first fetch reaches a human.
-pre_approve_additions = false
-pre_approve_version_changes = false
+```sh
+sudo install -Dm644 config.example.toml /etc/clyde/config.toml
+sudo $EDITOR /etc/clyde/config.toml
 ```
 
-Validate it before relying on it. This loads the configuration, probes the host,
-and exits:
+Every key in it — including the sections left commented out — is checked against
+the loader, so it is a working file rather than a sketch. The parts you must fill
+in are the pinned `bwrap` path and the three runtime roots; everything else has a
+usable default or is only needed for brokered push and the warden.
+
+Validate before relying on it. This loads the configuration, probes the host, and
+exits:
 
 ```sh
 clyded --check
@@ -407,14 +484,19 @@ than trusting the caller.
 
 ## Step 8: Firecracker
 
-Only `rust.resolve-deps` needs this. It is the one MVP task that executes with
-network reachable, so it requires microVM isolation and is refused rather than
-downgraded on a host that cannot provide it (D9). Everything else runs under
-bubblewrap.
+The microVM backend runs a build task inside a hardware-virtualised guest, which
+is the boundary hostile dependency code should execute behind
+([D24](docs/builder/decisions.md#d24-firecracker-is-the-default-backend-for-build-execution)).
+It is **opt-in per run** today: `rust.check` and `rust.test.unit` still name
+`NamespaceSandbox` as their policy floor, and an operator raises it per task with
+`--isolation microvm`. `rust.resolve-deps` requires it and is still refused,
+because the vsock egress bridge it needs is unbuilt.
+
+[docs/builder/microvm-bring-up.md](docs/builder/microvm-bring-up.md) is the
+walkthrough, including what to read when a guest does not boot. This step is the
+host setup it assumes.
 
 ### Host prerequisites
-
-These are real, and you can complete them today:
 
 ```sh
 ls -l /dev/kvm                       # present?
@@ -428,55 +510,94 @@ If `/dev/kvm` is missing on a CPU that reports `vmx` or `svm`, `clyde doctor`
 says so explicitly: that is a device that was not exposed, not hardware that
 cannot virtualise. Inside a VM, enable nested virtualisation on the hypervisor.
 
-Firecracker is not in the devShell, so install it and name it:
+Firecracker is not in the devShell, so install it separately. `mke2fs` is — it
+comes from `e2fsprogs` in the flake — and the backend needs both:
 
 ```toml
 [sandbox]
 firecracker = "/usr/local/bin/firecracker"
+mke2fs = "/nix/store/...-e2fsprogs-1.47.4-bin/bin/mke2fs"
 ```
 
-### What the backend expects
+Resolve the flake's `mke2fs` rather than typing a path, and give it a GC root —
+the daemon runs outside the devShell, so an unrooted store path can be collected
+out from under it:
 
-The daemon looks for guest images under the state directory:
+```sh
+nix develop -c sh -c 'echo $CLYDE_MKE2FS'
+sudo ln -sfn "$(nix develop -c sh -c 'echo $CLYDE_MKE2FS')" \
+  /nix/var/nix/gcroots/clyde/mke2fs
+```
+
+The distribution's own `/usr/sbin/mke2fs` works too, and needs no GC root. The
+only hard requirement is `-d` support — e2fsprogs 1.43 or newer — so any current
+version will do. Pinning the flake's copy is the more consistent choice, since
+the flake is the source of truth for tooling; pinning the distribution's is the
+more stable one.
+
+Without `mke2fs` the backend does not register at all, because every guest image
+is built with it, unprivileged: no loop mount and no root anywhere in the path.
+
+### Build the guest
+
+The kernel and the root images come from the flake, so image identity follows
+closure identity:
+
+```sh
+nix build .#guestVm
+sudo ln -sfn "$(readlink -f result)" /nix/var/nix/gcroots/clyde/guest-vm
+ln -sfn /nix/var/nix/gcroots/clyde/guest-vm ~/.local/share/clyde/vm
+```
+
+The second link is what creates the state directory's `vm` entry — nothing
+creates it for you, and the daemon does not go looking for a build result. The
+first is a GC root, for the same reason step 2 adds one for the runtime roots:
+the `vm` symlink is not a GC root, so pointing it straight at the store path
+leaves several gigabytes of images one `nix-collect-garbage` away from vanishing
+under a configured daemon.
+
+That produces the layout the backend expects:
 
 ```
-<state-dir>/vm/vmlinux              uncompressed guest kernel
+<state-dir>/vm/vmlinux              uncompressed guest kernel, ELF
 <state-dir>/vm/rootfs/workspace.img
-<state-dir>/vm/rootfs/rust.img      one per runtime root, named <kind>.img
+<state-dir>/vm/rootfs/rust.img      one erofs image per runtime root
 <state-dir>/vm/rootfs/fetch.img
 ```
 
-The rootfs is attached read-only as the root device, each mount with a host
-source becomes a drive, and a vsock device exists **only** when the egress
-profile permits egress — under profile `none` the guest has no channel of any
-kind to the host, and no network device in any case.
+The first build compiles a kernel and takes a while. The images are large — the
+rust root is a couple of gigabytes, uncompressed deliberately
+([R12](docs/builder/decisions.md#r12-the-guest-root-image-is-uncompressed-erofs)) —
+and they need a GC root like every other store path the daemon depends on.
 
-### What is missing
+### How a run is put together
 
-Three pieces, and all three are guest-side:
+The runtime root is attached read-only as the erofs root device. Every mount with
+a host source becomes a block device, because Firecracker has no filesystem
+passthrough of any kind: the source snapshot is an ext4 image built per run, and
+the mission cache is one ext4 image created once and attached read-write to every
+run of that mission. The guest finds each by **filesystem label**, since device
+names are positional.
 
-1. **No image build.** Nothing in the flake builds `vmlinux` or the rootfs
-   images from the runtime-root closures. `nix flake check` covers the closures;
-   turning one into a bootable ext4 image is unwritten.
-2. **No job contract.** `FirecrackerBackend::start` boots the VM with the drives
-   and `init=/init`, and never conveys the task's `argv`, environment, or working
-   directory to the guest — nor is there a path for an exit status to come back
-   other than the VM's own exit code. A guest `/init` would need a defined way to
-   learn what to run; that interface does not exist yet.
-3. **No vsock in the forwarder.** `clyde-forward` speaks to a Unix socket. The
-   guest side of the vsock bridge described in the
-   [network egress model](docs/network-egress-model.md#firecracker-phase-2b) is
-   not implemented.
+Every VM gets a vsock device — logs have nowhere else to go, and the 8250 console
+stalls under build output — and the host binds a listener on the egress port
+**only** for a profile that permits egress
+([D7 amendment](docs/builder/decisions.md#amendment-the-guest-channel-is-a-single-vsock-multiplexed-by-port)).
+There is no network device in any configuration.
 
-What *is* implemented and tested: backend selection by policy with no silent
-downgrade, the VM configuration as a pure function of the sandbox spec, the
-read-only-root and no-network-device properties as type-level guarantees, and the
-refusal path when KVM is absent.
+### What is not built
 
-So supplying `/dev/kvm` and a `firecracker` binary will not make
-`rust.resolve-deps` run. It stays refused — which is the correct behaviour, and
-why the refusal is tested directly. Closing those three gaps is the next
-deliverable after the MVP.
+- **The vsock egress bridge.** A task whose profile permits egress is refused by
+  preflight rather than run without it. This is why `rust.resolve-deps` still
+  does not run.
+- **Guest-side learn mode.** `clyde access learn` runs on the namespace backend.
+- **The raised policy floor**, which is what would make the microVM the default
+  rather than an operator's per-run choice.
+
+No test in this repository has booted a guest. The host side is covered by tests,
+including real image builds and the whole guest channel against a fake guest, but
+the first real boot is the first real boot — see the
+[bring-up guide](docs/builder/microvm-bring-up.md).
 
 ## Verifying the install
 
@@ -498,10 +619,27 @@ clyde mission create \
   "tidy up the thing crate"
 ```
 
-Approve it, then watch and close:
+Approve it, then confirm an access baseline. **A build task with no confirmed
+baseline is refused** — deliberately, so there is no implicit wide-scope first run
+([D18](docs/builder/decisions.md#d18-build-access-is-baselined-pinned-in-clyde-state-and-escalated-on-drift)).
+`propose` computes the baseline from the static build closure and shows it;
+`confirm` puts it in force:
 
 ```sh
 clyde mission approve <mission-id>
+
+clyde access propose --workspace <workspace-id> --task rust.check crates/thing
+clyde access confirm --workspace <workspace-id> --task rust.check crates/thing
+```
+
+The proposal separates the two tiers, and the distinction is the point: subtree
+grants are first-party code and are not drift-sensitive, so ordinary editing
+inside them never prompts again; pins are everything outside them and each
+carries a reason.
+
+Then watch and close:
+
+```sh
 clyde mission status <mission-id>
 clyde audit show --limit 50
 clyde audit verify                # the hash chain, including its recorded head
@@ -512,17 +650,66 @@ clyde mission close <mission-id>
 Every command takes `--json` for a stable machine-readable shape, and `clyde tui`
 gives the same surfaces interactively.
 
-Two things to expect:
 
-- **`clyde task run` is refused on the host.** Tasks are the actor surface; a
-  human gets the operator commands, and the message says so. This is the same
-  separation that makes self-approval impossible (D2).
-- **A task only runs once an agent is hosted.** `mission approve` starts the
-  agent, and `agent.command` is resolved from inside the workspace runtime root
-  rather than from `PATH` (D6) — so the agent binary has to be part of
-  `runtimeRoots.workspace` in [`nix/runtime-roots.nix`](nix/runtime-roots.nix).
-  Until it is added there, the operator surface is what runs on a real host, and
-  the task pipeline is covered by the test suite.
+### Posture
+
+`clyde doctor` ends with the deployment's posture and names every bypass it can
+see:
+
+```
+posture  advisory: project code can be run outside Clyde entirely
+  - a project build toolchain is on PATH (cargo at /nix/store/…/bin/cargo), so project code can be built outside Clyde
+  - no agent is hosted, so the driver's environment is the host's
+```
+
+Read that as the honest summary of what this install defends against. A hostile
+dependency is fully contained — it runs against a read-only snapshot with no
+network and no credentials, whoever asked for the build. A careless or hostile
+*driver* is not, because nothing stops it running `cargo` itself.
+
+Posture is derived and never configured. There is no key that makes an advisory
+deployment report as enforcing, and it participates in no admission decision — it
+changes what is reported, never what is permitted
+([D26](docs/builder/decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)).
+It is recorded on each task run rather than looked up later, so a deployment that
+gains the warden mid-mission does not make the earlier work look as though it
+were enforced.
+
+### Running a task
+
+`clyde task run` works on both surfaces
+([D25](docs/builder/decisions.md#d25-task-execution-has-an-operator-surface-on-the-admin-socket)),
+and picks between them from where it is running rather than from a flag:
+
+```sh
+clyde task run rust.check crates/thing
+clyde task run rust.check crates/thing --mission <mission-id>
+```
+
+On the host there is no session token, so this is an **operator** request on the
+admin socket, authenticated by `SO_PEERCRED`. Inside a workspace environment a
+token is present and the same command is an **actor** request. `--mission` is
+optional while exactly one mission is active; with several, Clyde lists them
+rather than guessing, because running against the wrong mission charges the wrong
+budget and uses the wrong access baseline.
+
+The surfaces differ in who authenticates and in what the record says. They do not
+differ in what is allowed: the same request is admitted against the same lease,
+policy, budget, and baseline either way, and the acting principal is recorded on
+the run so review does not have to infer it:
+
+```
+task.requested … path=crates/core principal=operator principal_detail=operator(uid 1000)
+```
+
+Those are two separate fields. `actor` is the lease's actor — who the work is
+attributed to. `principal` is who actually asked.
+
+What is **not** affected: `clyde approve` still refuses inside a sandbox, and that
+refusal is load-bearing — it is what makes agent self-approval impossible
+([D2](docs/builder/decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)).
+The two refusals protect different properties, and only that one was ever
+intended.
 
 ## Troubleshooting
 
@@ -530,12 +717,18 @@ Two things to expect:
 |---|---|---|
 | `doctor`: user namespaces BLOCK, AppArmor | Ubuntu 23.10+ default | [Step 3](#step-3-user-namespaces-and-apparmor) |
 | `doctor`: cgroup delegation BLOCK, `subtree_control` not writable | clyded outside a login session | `loginctl enable-linger $USER` |
+| `doctor`: session bus MISS | clyded has no `XDG_RUNTIME_DIR` — started as a system unit, or under sudo | Start it in a login session: `systemctl --user`, or a terminal. Build tasks are refused without it |
+| `doctor`: runtime roots BLOCK, programs would not resolve | `sandbox.runtime_root_manifests` unset, so only the root itself is bound | [Step 2](#step-2-materialise-the-runtime-roots) |
 | `doctor`: cgroup delegation BLOCK, `/sys/fs/cgroup` read-only | You are in a container | Run clyded on the host. Nothing inside can lift it. |
 | Task refused, `IsolationUnavailable` | No backend meets the task's `min_isolation` | Check `doctor`; T2+ needs bubblewrap **and** delegation (D22) |
 | Task refused, `CgroupLimitsUnavailable` | Delegation went away after start | [Step 4](#step-4-cgroup-v2-delegation) |
-| `rust.resolve-deps` refused | Requires microVM isolation | Expected. [Step 8](#step-8-firecracker) |
+| `rust.resolve-deps` refused | Requires microVM isolation, and its vsock egress bridge is unbuilt | Expected. [Step 8](#step-8-firecracker) |
+| Task refused, `firecracker cannot honour this specification: egress profile …` | The guest egress bridge is not built | Expected; run the task on the namespace backend |
+| `no block device carries the label …` in a guest run | The image was built without a label, or the mount table changed shape | [Bring-up guide](docs/builder/microvm-bring-up.md) |
+| Guest run fails, `the VM stopped without reporting` | The guest died before reporting | Read `<state-dir>/run/sandboxes/<id>.console.log` |
 | Push refused, `RemoteNotAllowlisted` | `push.remotes` unset | [Step 6](#step-6-host-configuration). Without it every push is refused before a human is asked. |
 | Push refused, protected branch | `protected_branch_patterns` matched | Refused before a human is asked, by design |
+| `bwrap: execvp <path>: No such file or directory` | The runtime root closure is unbound: `sandbox.runtime_root_manifests` unset | [Step 2](#step-2-materialise-the-runtime-roots). A `buildEnv` root is symlinks into store paths the closure must name |
 | Socket bind fails | State directory path over the 107-byte socket limit | Shorter `--state-dir` |
 | Build script fails on missing git metadata | `.git` is never in a build sandbox (D21) | Known limitation; `doctor` lists it |
 | Config change had no effect | Set in a layer that may not set it | `clyded --check`; repository layers may only narrow (D14, D20) |

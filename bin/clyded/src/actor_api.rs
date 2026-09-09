@@ -22,6 +22,7 @@ use clyde_api::views::{
     ArtifactView, CapabilityView, DenialView, LogView, MissionView, SubagentView, TaskRunView,
     capability_for,
 };
+use clyde_core::actor::Principal;
 use clyde_core::classification::EgressProfile;
 use clyde_core::ids::TaskRunId;
 use clyde_core::repo_path::RepoPath;
@@ -145,6 +146,18 @@ fn initialize(
 }
 
 /// Resolves a token to its session, lease, and mission.
+/// The principal for a request that arrived on the actor socket.
+///
+/// `hosted` is read from whether the session has a workspace-environment
+/// sandbox, so it is observed rather than declared (D25): an external driver
+/// cannot present itself as one Clyde launched.
+fn actor_principal(session: &ResolvedSession) -> Principal {
+    Principal::Session {
+        session_actor: session.session.actor.clone(),
+        hosted: session.session.sandbox.is_some(),
+    }
+}
+
 fn resolve(daemon: &Arc<Daemon>, hash: &TokenHash) -> Result<ResolvedSession> {
     daemon
         .store
@@ -301,17 +314,21 @@ async fn run_task(
     let workspace = daemon.store.get_workspace(&session.mission.workspace)?;
     let config = daemon.config_for(&workspace.root)?;
     let context = TaskContext {
+        // An actor cannot name an isolation level: the policy floor is the whole
+        // of what its request decides (D25).
+        isolation_floor: None,
         mission: session.mission.clone(),
         lease: session.lease.clone(),
         workspace,
         config,
+        principal: actor_principal(session),
     };
     let run = tasks::run_task(daemon, &context, task, path, options).await?;
     Ok(ToolResult::json(&TaskRunView::new(&run)))
 }
 
 /// Builds task options, defaulting where the agent gave none.
-fn default_options(task: TaskType, provided: &serde_json::Value) -> Result<TaskOptions> {
+pub(crate) fn default_options(task: TaskType, provided: &serde_json::Value) -> Result<TaskOptions> {
     if !provided.is_null() && provided.as_object().is_some_and(|map| !map.is_empty()) {
         let mut value = provided.clone();
         if let Some(map) = value.as_object_mut() {
@@ -533,10 +550,14 @@ async fn commit_prepare(
     let workspace = daemon.store.get_workspace(&session.mission.workspace)?;
     let config = daemon.config_for(&workspace.root)?;
     let context = TaskContext {
+        // An actor cannot name an isolation level: the policy floor is the whole
+        // of what its request decides (D25).
+        isolation_floor: None,
         mission: session.mission.clone(),
         lease: session.lease.clone(),
         workspace,
         config,
+        principal: actor_principal(session),
     };
     let _ = args.paths;
     let run = tasks::run_task(

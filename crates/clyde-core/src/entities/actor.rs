@@ -149,3 +149,59 @@ mod tests {
         assert!(a.validate().is_err());
     }
 }
+
+/// How a request was authenticated.
+///
+/// [`ActorKind`] says what an actor *is*; this says how a given request reached
+/// the daemon, and only the second is a security fact about the request
+/// (D25). Every side-effecting record carries one, so "who ran this" is
+/// answerable from the record rather than inferred from the lease.
+///
+/// It is determined by the daemon from the connection it arrived on. There is
+/// no code path that lets a requester assert its own principal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Principal {
+    /// The admin socket, authenticated by `SO_PEERCRED`. Never reachable from a
+    /// sandbox, because the admin socket is never mounted into one.
+    Operator { uid: u32 },
+    /// The actor socket, authenticated by a session token. Covers an agent
+    /// Clyde hosts, an agent running outside Clyde, and CI.
+    Session {
+        session_actor: ActorId,
+        /// Whether Clyde launched this actor. Observed, not declared: it is what
+        /// distinguishes a warden-hosted agent from an external driver in review.
+        hosted: bool,
+    },
+}
+
+impl Principal {
+    /// A short name for rendering and for audit payloads.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::Operator { .. } => "operator",
+            Self::Session { hosted: true, .. } => "hosted-agent",
+            Self::Session { hosted: false, .. } => "external-actor",
+        }
+    }
+
+    /// Whether this principal is a human on the admin socket.
+    ///
+    /// Used to decide that an approval is a self-confirmation rather than an
+    /// approval ([D2 amendment](../../docs/builder/decisions.md)), never to
+    /// widen or narrow what may run.
+    pub fn is_operator(&self) -> bool {
+        matches!(self, Self::Operator { .. })
+    }
+}
+
+impl std::fmt::Display for Principal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Operator { uid } => write!(f, "operator(uid {uid})"),
+            Self::Session { session_actor, .. } => {
+                write!(f, "{}({session_actor})", self.kind_name())
+            }
+        }
+    }
+}

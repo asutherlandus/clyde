@@ -44,6 +44,10 @@ pub mod methods {
     pub const DEPS_LIST: &str = "deps.list";
     pub const DEPS_CONFIRM_INVENTORY: &str = "deps.confirm-inventory";
 
+    /// The operator task surface (D25). `run` is here as well as on the actor
+    /// surface: a human driving the pipeline is admitted against the same lease,
+    /// policy, budget, and baseline, and is recorded as the acting principal.
+    pub const TASK_RUN: &str = "task.run";
     pub const TASK_LIST: &str = "task.list";
     pub const TASK_STATUS: &str = "task.status";
     pub const TASK_LOGS: &str = "task.logs";
@@ -52,7 +56,7 @@ pub mod methods {
 
     /// Every admin method, for the CLI's own routing and for tests that assert
     /// the surfaces do not overlap.
-    pub const ALL: [&str; 28] = [
+    pub const ALL: [&str; 29] = [
         WORKSPACE_REGISTER,
         WORKSPACE_LIST,
         MISSION_CREATE,
@@ -77,6 +81,7 @@ pub mod methods {
         DEPS_IMPORT,
         DEPS_LIST,
         DEPS_CONFIRM_INVENTORY,
+        TASK_RUN,
         TASK_LIST,
         TASK_STATUS,
         TASK_LOGS,
@@ -312,6 +317,13 @@ pub struct MissionReview {
     pub egress: Vec<String>,
     pub brokered_operations: Vec<String>,
     pub budget_consumed: String,
+    /// The postures the mission's work actually happened under, distinct, in the
+    /// order first seen (D26).
+    ///
+    /// A list rather than a single value because posture is a property of the
+    /// moment: a deployment that gains the warden mid-mission must not make the
+    /// earlier work look as though it were enforced.
+    pub postures: Vec<String>,
     pub closing_diff: Option<String>,
     /// Whether the audit chain for this mission verifies.
     pub audit_intact: bool,
@@ -324,6 +336,10 @@ pub struct TaskSummary {
     pub state: String,
     pub classification: Option<String>,
     pub policy_digest: String,
+    /// Who asked (D25) and what was in force when they did (D26), so review
+    /// answers both without inference.
+    pub principal: String,
+    pub posture: String,
 }
 
 #[cfg(test)]

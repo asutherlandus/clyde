@@ -228,6 +228,20 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    fn set_mission_expiry(
+        &self,
+        id: &MissionId,
+        expiry: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        let mut state = self.state()?;
+        let mission = state
+            .missions
+            .get_mut(id)
+            .ok_or_else(|| StoreError::UnknownMission(id.clone()))?;
+        mission.expiry = expiry;
+        Ok(())
+    }
+
     fn close_mission(&self, closeout: MissionCloseout) -> Result<Mission> {
         let mut state = self.state()?;
         let mission = state
@@ -567,6 +581,20 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    fn set_task_run_backend(
+        &self,
+        id: &TaskRunId,
+        kind: clyde_core::classification::BackendKind,
+    ) -> Result<()> {
+        let mut state = self.state()?;
+        let run = state
+            .task_runs
+            .get_mut(id)
+            .ok_or_else(|| StoreError::UnknownTaskRun(id.clone()))?;
+        run.backend = kind;
+        Ok(())
+    }
+
     fn record_policy_decision(&self, decision: PolicyDecision) -> Result<()> {
         self.state()?.policy_decisions.push(decision);
         Ok(())
@@ -590,6 +618,16 @@ impl Store for MemoryStore {
             .get(id)
             .cloned()
             .ok_or_else(|| StoreError::UnknownSnapshot(id.clone()))
+    }
+
+    fn latest_snapshot(&self, mission: &MissionId, target: &RepoPath) -> Result<Option<Snapshot>> {
+        Ok(self
+            .state()?
+            .snapshots
+            .values()
+            .filter(|snapshot| &snapshot.mission == mission && &snapshot.requested_path == target)
+            .max_by_key(|snapshot| snapshot.created_at)
+            .cloned())
     }
 
     fn snapshot_contains(&self, id: &SnapshotId, path: &RepoPath) -> Result<bool> {

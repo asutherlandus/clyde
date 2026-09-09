@@ -18,10 +18,11 @@ pub struct Migration {
 }
 
 /// Every migration, in order. Never edit a released migration; add another.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial-schema",
-    sql: r#"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial-schema",
+        sql: r#"
 CREATE TABLE workspaces (
     id          TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,
@@ -253,4 +254,26 @@ CREATE TABLE bundle_inventory_confirmations (
     confirmed_at TEXT NOT NULL
 ) STRICT;
 "#,
-}];
+    },
+    Migration {
+        version: 2,
+        name: "task-request-principal",
+        // D25 adds `principal` to a task request: how the request was authenticated,
+        // as opposed to `actor`, which is who the work is attributed to.
+        //
+        // Rows written before this migration were all actor-driven, because the
+        // operator surface did not exist to write any others. Backfilling them as
+        // sessions is therefore a statement of fact about the code that wrote them
+        // rather than an inference, and `hosted` follows the same reasoning: the only
+        // way to hold a token then was to be an environment Clyde launched.
+        sql: r#"
+UPDATE task_requests
+   SET payload = json_set(
+         payload,
+         '$.principal',
+         json_object('kind', 'session', 'session_actor', actor, 'hosted', json('true'))
+       )
+ WHERE json_extract(payload, '$.principal') IS NULL;
+"#,
+    },
+];

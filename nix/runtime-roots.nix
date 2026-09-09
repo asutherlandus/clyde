@@ -82,7 +82,7 @@ let
     cat > $out/libexec/clyde/README <<'EOF'
     clyde-forward is bind-mounted read-only at /run/clyde/clyde-forward by the
     sandbox manager. It is trusted code running in an untrusted netns; see
-    docs/network-egress-model.md.
+    docs/builder/tasks-and-policy.md.
     EOF
   '';
 

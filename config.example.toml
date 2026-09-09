@@ -1,0 +1,199 @@
+# Clyde host configuration — example
+#
+# Copy to /etc/clyde/config.toml (or point $CLYDE_HOST_CONFIG at it), then
+# replace every REPLACE_ME. Validate before relying on it:
+#
+#     clyded --check
+#
+# Unknown keys are rejected rather than ignored, so a typo here is an error and
+# never a restriction that silently is not there. Layering is
+# defaults -> host -> user -> repository, and a repository may only *narrow*
+# (D14): a repo value that would widen authority is rejected with a diagnostic.
+#
+# This example is deliberately a **builder-only** deployment. See the note on
+# [agent] at the bottom for what that means and why it is the honest default
+# today.
+
+# ---------------------------------------------------------------------------
+# Sandbox: which binaries run, and which runtime roots tasks execute against
+# ---------------------------------------------------------------------------
+[sandbox]
+
+# Pin the exact bwrap the AppArmor profile permits. A PATH change must not be
+# able to select a different binary than the profile names (INSTALL.md step 3).
+#
+#     nix develop --command command -v bwrap
+bwrap = "REPLACE_ME/bin/bwrap"
+
+# Resource limits are applied by wrapping the sandbox command rather than by a
+# pre_exec hook, so the exact command Clyde runs is a value a test can assert on
+# and an audit record can carry (R4). Both are resolved from PATH when unset;
+# pin them if PATH differs between your shell and the daemon's service unit.
+# systemd_run = "/usr/bin/systemd-run"
+# prlimit     = "/usr/bin/prlimit"
+
+# Runtime roots are nix closures, not images (D6). Build them and add GC roots
+# so a nix-collect-garbage cannot delete one out from under a running daemon:
+#
+#     sudo mkdir -p /nix/var/nix/gcroots/clyde
+#     for root in workspace rust fetch; do
+#       sudo ln -sfn "$(nix build .#$root --print-out-paths --no-link)" \
+#         "/nix/var/nix/gcroots/clyde/$root"
+#     done
+#
+# Then name the stable symlinks rather than raw store paths.
+runtime_root_workspace = "/nix/var/nix/gcroots/clyde/workspace"
+runtime_root_rust      = "/nix/var/nix/gcroots/clyde/rust"
+runtime_root_fetch     = "/nix/var/nix/gcroots/clyde/fetch"
+
+# The closure manifests, without which a root's closure is taken to be the root
+# alone. That is wrong for every root this flake builds: `buildEnv` produces a
+# tree of symlinks into other store paths, so binding only the root leaves every
+# binary a dangling symlink inside the sandbox and each task dies with
+# `bwrap: execvp <program>: No such file or directory`.
+#
+#     sudo ln -sfn "$(nix build .#runtimeRootManifests --print-out-paths --no-link)" \
+#       /nix/var/nix/gcroots/clyde/manifests
+runtime_root_manifests = "/nix/var/nix/gcroots/clyde/manifests"
+
+# The in-sandbox egress forwarder, bind-mounted read-only into any sandbox whose
+# profile permits egress. It is never invoked by a human, which is why INSTALL.md
+# puts it in libexec.
+forwarder = "/usr/local/libexec/clyde-forward"
+
+# The microVM backend (D24). Both of these must be set for it to register at
+# all: `firecracker` runs the guest, and `mke2fs` builds every guest image
+# unprivileged — no loop mount and no root.
+#
+# The guest kernel and root images come from the flake:
+#
+#   nix build .#guestVm
+#   ln -s "$(readlink -f result)" <state-dir>/vm
+#
+# firecracker = "/usr/local/bin/firecracker"
+# mke2fs = "/usr/sbin/mke2fs"
+
+# ---------------------------------------------------------------------------
+# Resource limits
+# ---------------------------------------------------------------------------
+# Cgroup v2 limits are mandatory for build and test tasks, with no degraded mode
+# and no opt-in flag: without delegation those tasks are refused (D22). These
+# values bound a task; they do not decide whether it may run.
+[limits.build]
+max_wall_clock   = "45m"
+max_memory_bytes = 8589934592     # 8 GiB
+max_cpu_percent  = 400            # four cores' worth
+max_tasks        = 512
+max_open_files   = 8192
+
+# The workspace environment holds a semi-trusted agent rather than hostile
+# dependency code, so it may run on rlimits and a timeout (D22). Inert in a
+# builder-only deployment, which has no workspace environment at all.
+[limits.workspace]
+max_wall_clock   = "4h"
+max_memory_bytes = 4294967296     # 4 GiB
+max_cpu_percent  = 200
+
+# ---------------------------------------------------------------------------
+# Mission defaults
+# ---------------------------------------------------------------------------
+# The envelope `clyde mission create` proposes when nothing narrower is asked
+# for. A mission is approved as the exact envelope that will be issued; no field
+# is decided after approval.
+[mission.defaults]
+max_duration     = "2h"
+max_expiry       = "8h"
+max_task_runs    = 50
+max_cpu_seconds  = 7200
+# Counts against the mission budget and is destroyed at closeout (D3), so this
+# bounds one unit of work rather than the machine.
+max_cache_bytes  = 8589934592     # 8 GiB
+
+# ---------------------------------------------------------------------------
+# Snapshots
+# ---------------------------------------------------------------------------
+[snapshot]
+# Additions only. The absolute exclusions — target/, node_modules/, .env*, key
+# material, .git — are built in, applied before grants, and not admissible by
+# one. A repository may add to this list and never remove from it.
+exclusions = [
+  # "vendor/**",
+  # "*.sqlite",
+]
+
+# ---------------------------------------------------------------------------
+# Dependency fetch
+# ---------------------------------------------------------------------------
+[registries]
+# A repository may narrow this set and can never add a host to it.
+allowed = ["crates.io", "static.crates.io", "index.crates.io"]
+
+[fetch]
+# Nothing is pre-approved by default: the first fetch reaches a human, who sees
+# the lockfile classification and the code-execution inventory diff *before* any
+# build script runs. Turning these on pre-approves the low-risk classes only —
+# git dependencies and unknown registries are never pre-approvable.
+pre_approve_additions       = false
+pre_approve_version_changes = false
+
+# ---------------------------------------------------------------------------
+# Push and the credential broker (Phase 4)
+# ---------------------------------------------------------------------------
+# Not needed for a build walkthrough. Without push.remotes every push is refused
+# before a human is even asked, which is the correct default — fill these in only
+# when you want to exercise brokered push.
+#
+# [push]
+# remotes                   = ["origin"]
+# branch_patterns           = ["feature/*", "clyde/*"]
+# # Refused whatever the allowlist says.
+# protected_branch_patterns = ["main", "master", "release/*", "production"]
+#
+# [broker]
+# allow_ssh_agent = false
+# ssh_key         = "/home/REPLACE_ME/.ssh/id_ed25519_clyde"
+#
+# # The broker resolves a remote from *here* and never from the workspace
+# # repository's own configuration, which is attacker-controlled content in this
+# # threat model. A remote is approved by name; the URL comes from this table
+# # (R7), so changing a URL here is not an approval mismatch and a different
+# # remote is.
+# [broker.remotes]
+# origin = "git@github.com:REPLACE_ME/example.git"
+
+# ---------------------------------------------------------------------------
+# Model API egress (warden only)
+# ---------------------------------------------------------------------------
+# The only profile for which Clyde terminates TLS, so that the agent can
+# authenticate without ever holding the credential (D11, D7 amendment). It exists
+# to serve the workspace environment, so it does nothing in a builder-only
+# deployment.
+#
+# [egress]
+# model_api_hosts       = ["api.anthropic.com"]
+# model_api_auth_header = "authorization"
+
+# ---------------------------------------------------------------------------
+# Agent hosting — deliberately absent
+# ---------------------------------------------------------------------------
+# The absence of an [agent] section is what makes this a builder-only
+# deployment (D23). clyded treats that as a supported configuration: it starts,
+# serves both sockets, activates missions, runs tasks on the operator surface
+# (D25), and reports `advisory` posture.
+#
+# Leaving it out is the honest choice today, because the warden is not built.
+# Setting it does not close the bypass on its own: posture reaches `enforcing`
+# only when the driver genuinely cannot reach a project build toolchain, and
+# `clyde doctor` names each specific bypass it can still see (D26). Note that a
+# host with cargo, rustc, or rustup on PATH stays advisory whatever else is
+# configured, and that no configuration value can change what is reported.
+#
+# What clyded execs as the agent comes from host or user configuration only.
+# Repository configuration setting agent.command is a hard rejection, not a
+# narrowing check, because a repo that can choose what Clyde executes has
+# arbitrary code execution before any policy applies (D20).
+#
+# [agent]
+# command = "claude"
+# args    = []
+# env     = ["TERM", "LANG"]     # allowlist; the sandbox environment is otherwise cleared
