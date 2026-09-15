@@ -110,12 +110,14 @@ crates/
   clyde-git/         the single place that constructs a git command (R2)
   clyde-api/         wire types, actor-facing view types, MCP tool + JSON-RPC defs
   clyde-broker-api/  broker request/response types, shared by clyded and brokerd
+  clyde-guest-api/   the microVM job contract, shared by clyded and clyde-init  (Part 1b)
 bin/
   clyde/             CLI  (TUI added in Phase 4)
   clyded/            control plane daemon
   clyde-brokerd/     broker daemon (stub in Phase 0)
   clyde-forward/     in-sandbox egress forwarder (part of runtime roots)
-nix/                 runtime root derivations
+  clyde-init/        microVM guest init, PID 1 in the guest  (Part 1b)
+nix/                 runtime root derivations, and the guest kernel and images
 tests/fixtures/      fixture projects, each stating the property it asserts
 bin/clyded/tests/    cross-crate integration tests, which need the daemon
 ```

@@ -8,7 +8,7 @@ This is a walkthrough of the commands, in the order they work. [INSTALL.md](../.
 
 It proves the pipeline: a mission envelope approved before anything runs, a build closure turned into a confirmed baseline, an immutable snapshot, an offline `cargo check` in a sandbox with no credentials, structured failure classification, artifacts, and a hash-chained audit trail that `clyde audit verify` checks against its recorded head.
 
-It does not prove the isolation boundary unless the host can provide one. Without unprivileged user namespaces and cgroup v2 delegation, tasks are refused rather than run weakened ([D22](decisions.md#d22-no-degraded-resource-limits-for-untrusted-execution)), and on a host where a `cargo` is on `PATH` the deployment posture is `advisory`: Clyde constrains what runs *through* it and cannot stop the driver building outside it ([D26](decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)). `rust.resolve-deps` is refused on every host today — the guest side of the microVM backend is unbuilt ([D24](decisions.md#d24-firecracker-is-the-default-backend-for-build-execution), [INSTALL step 8](../../INSTALL.md#step-8-firecracker)) — so step 5 brings dependencies in by import instead.
+It does not prove the isolation boundary unless the host can provide one. Without unprivileged user namespaces and cgroup v2 delegation, tasks are refused rather than run weakened ([D22](decisions.md#d22-no-degraded-resource-limits-for-untrusted-execution)), and on a host where a `cargo` is on `PATH` the deployment posture is `advisory`: Clyde constrains what runs *through* it and cannot stop the driver building outside it ([D26](decisions.md#d26-enforcement-posture-is-explicit-reported-and-recorded)). `rust.resolve-deps` is refused on every host today — the vsock egress bridge its profile needs is unbuilt, so the task is refused at preflight rather than run without the egress it was promised ([D24](decisions.md#d24-firecracker-is-the-default-backend-for-build-execution), [INSTALL step 8](../../INSTALL.md#step-8-firecracker)) — so step 4 brings dependencies in by import instead.
 
 ## 0. Build
 
@@ -18,7 +18,7 @@ nix develop                        # the only supported development entry point
 cargo build --release
 ```
 
-The binaries are `clyde`, `clyded`, `clyde-brokerd`, and `clyde-forward`; [INSTALL step 1](../../INSTALL.md#step-1-get-the-source-and-build) installs them. Everything below assumes the flake devShell, which supplies `bwrap`, `sqlite`, and the Rust toolchain. Nothing should be installed globally — a host-global `cargo` inside the workspace runtime root is exactly what [D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images) keeps out.
+The host binaries are `clyde`, `clyded`, `clyde-brokerd`, and `clyde-forward`, and [INSTALL step 1](../../INSTALL.md#step-1-get-the-source-and-build) installs them. The build also produces `clyde-init`, which runs as PID 1 inside a microVM guest and reaches one inside the flake-built image rather than through an install step. Everything below assumes the flake devShell, which supplies `bwrap`, `sqlite`, and the Rust toolchain. Nothing should be installed globally — a host-global `cargo` inside the workspace runtime root is exactly what [D6](decisions.md#d6-runtime-roots-are-nix-closures-not-oci-images) keeps out.
 
 ## 1. Materialise the runtime roots and write host configuration
 
@@ -188,7 +188,7 @@ The actor socket (`<state-dir>/run/clyded.sock`) speaks MCP over line-framed JSO
 
 Be aware of the current limit: session tokens are issued when Clyde hosts an agent, and there is no admin method for issuing one to an arbitrary external driver yet. So the operator surface above is how you drive the builder today; the actor path is exercised by the test suite rather than by a CLI command. The admin socket is never mounted into any sandbox and is mode `0600` with `SO_PEERCRED` checks, which is what makes self-approval structurally impossible rather than prohibited — `clyde approve` and `clyde access confirm` refuse to run inside a sandbox ([D2](decisions.md#d2-per-actor-capability-tokens-with-a-separate-human-approval-channel)).
 
-Brokered `git.push` ([D8](decisions.md#d8-brokered-git-push-uses-the-developers-existing-credential-inside-the-broker-only)) needs `clyde-brokerd` plus `[push]`, `[broker]`, and `[broker.remotes]` in host configuration — without `push.remotes` every push is refused before a human is even asked — and its request surface is the actor's `request_publish`, so it is not reachable from the operator CLI yet. Its security properties, including the hostile-`.git/config`-and-hooks hardening, are implemented and asserted against a fixture repository whose hooks and configuration are hostile.
+Brokered `git.push` ([D8](decisions.md#d8-brokered-gitpush-uses-the-developers-existing-credential-inside-the-broker-only)) needs `clyde-brokerd` plus `[push]`, `[broker]`, and `[broker.remotes]` in host configuration — without `push.remotes` every push is refused before a human is even asked — and its request surface is the actor's `request_publish`, so it is not reachable from the operator CLI yet. Its security properties, including the hostile-`.git/config`-and-hooks hardening, are implemented and asserted against a fixture repository whose hooks and configuration are hostile.
 
 ## Where things live
 

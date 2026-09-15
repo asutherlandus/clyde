@@ -554,11 +554,15 @@ SQLite at `~/.local/share/clyde/db.sqlite`, with blobs alongside:
   snapshots/        content store + materialised snapshot trees
   deps/             dependency bundles (read-only when mounted)
   missions/<id>/    per-mission writable cache (D3), deleted at closeout
-  logs/             daemon logs
-  run/              sockets: clyded.sock, clyded-admin.sock, brokerd.sock
+  logs/             daemon logs, and logs/tasks/<id>/ per task run
+  ca/               the egress CA, including its private key (mode 0700)
+  broker-scratch/   the broker's sanitised temporary repository
+  vm/               microVM guest kernel and root images, a symlink to a nix build
+  run/              sockets: clyded.sock, clyded-admin.sock, brokerd.sock (mode 0700),
+                    plus sandbox/ for per-sandbox scratch and vsock/ for guest sockets
 ```
 
-**Tables** — `workspaces`, `actors`, `missions`, `leases`, `actor_sessions`, `task_requests`, `task_runs`, `snapshots`, `snapshot_entries`, `artifacts`, `approval_requests`, `approval_decisions`, `broker_ops`, `policy_decisions`, `egress_attempts`, `access_baselines`, `baseline_paths`, `code_exec_inventory`, `audit_events`, `config_loads`.
+**Tables** — `workspaces`, `actors`, `missions`, `leases`, `actor_sessions`, `task_requests`, `task_runs`, `snapshots`, `snapshot_entries`, `artifacts`, `approval_requests`, `approval_decisions`, `broker_ops`, `policy_decisions`, `egress_attempts`, `access_baselines`, `baseline_paths`, `baseline_proposals`, `code_exec_inventory`, `dep_bundles`, `bundle_inventory_confirmations`, `audit_events`, `audit_head`, `config_loads`.
 
 Access baselines live here and nowhere else. They are deliberately not repository files: an attacker who could edit the baseline could conceal their own drift.
 

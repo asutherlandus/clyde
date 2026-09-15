@@ -212,7 +212,7 @@ Perfect reproducibility across every ecosystem; every package manager and framew
 | Subsystem | MVP choice | Later |
 |---|---|---|
 | Control plane, CLI/TUI | **Rust** | unchanged |
-| Process model | three binaries: `clyde` (CLI/TUI), `clyded` (control plane), `clyde-brokerd` (broker) ([D15](decisions.md#d15-three-binaries-from-phase-0)) | optional fourth for the warden ([D23](decisions.md#d23-the-mvp-splits-into-the-builder-and-the-warden)) |
+| Process model | three host processes: `clyde` (CLI/TUI), `clyded` (control plane), `clyde-brokerd` (broker) ([D15](decisions.md#d15-three-binaries-from-phase-0)); plus two that run inside a boundary rather than on the host, `clyde-forward` in a sandbox and `clyde-init` as guest PID 1 | a separate warden binary, once agent hosting moves out of `clyded` ([D23](decisions.md#d23-the-mvp-splits-into-the-builder-and-the-warden)) |
 | Actor API | **MCP over a Unix socket**, newline-delimited JSON-RPC ([D10](decisions.md#d10-mcp-is-the-primary-actor-facing-api), [D19](decisions.md#d19-mcp-over-the-actor-socket-is-line-framed-json-rpc)) | gRPC or streamable HTTP for remote deployment |
 | Admin API | JSON-RPC over a Unix socket, same message codec | — |
 | Config and policy | **TOML** for static config, **Rust enums/structs** for built-in task policy | a Cedar/OPA-like layer if the task model stabilises |

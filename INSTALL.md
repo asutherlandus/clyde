@@ -75,7 +75,7 @@ nix develop                       # the only supported entry point
 cargo build --release
 ```
 
-The four binaries land in `target/release/`:
+The five binaries land in `target/release/`:
 
 | Binary | Role |
 |---|---|
@@ -83,9 +83,11 @@ The four binaries land in `target/release/`:
 | `clyde` | CLI and terminal client. Operator and actor surfaces. |
 | `clyde-brokerd` | The credential broker. Separate process, holds the credential. |
 | `clyde-forward` | The in-sandbox egress forwarder. Bind-mounted into sandboxes. |
+| `clyde-init` | The microVM guest init, PID 1 inside a guest. Not installed on the host — it reaches a guest inside the flake-built root image ([step 8](#step-8-firecracker)). |
 
-The flake does not package these yet — `packages` exposes the runtime roots
-only — so install them by copying:
+The flake does not package the host binaries yet — `packages` exposes the
+runtime roots and the guest kernel, init, and images — so install the four host
+binaries by copying:
 
 ```sh
 sudo install -Dm755 target/release/clyded        /usr/local/bin/clyded

@@ -64,6 +64,7 @@ What exists:
   pipeline, access baselines, the egress proxy, and agent hosting
 - `clyde-brokerd` — the credential broker
 - `clyde-forward` — the in-sandbox egress forwarder
+- `clyde-init` — the microVM guest init, PID 1 inside a Firecracker guest
 - bubblewrap and Firecracker backends behind one `SandboxBackend` trait
 
 ### What has and has not been exercised
@@ -111,7 +112,7 @@ was promised is refused at preflight.
 
 ```sh
 nix develop                       # the only supported development entry point
-cargo nextest run --all-features  # 734 tests
+cargo nextest run --all-features  # 739 tests
 nix flake check                   # includes the runtime-root assertion
 
 cargo run -p clyde -- doctor      # what this host can and cannot do

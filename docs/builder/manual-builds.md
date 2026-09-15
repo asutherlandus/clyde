@@ -51,7 +51,7 @@ The `build/` rule is not hypothetical for Rust: `rustversion` and `thiserror` bo
 
 This is the gate. Everything else is mechanical.
 
-Build tasks are offline **by construction**, not by convention: no route out of the sandbox, `CARGO_NET_OFFLINE=true`, and `--frozen`. A missing crate fails with `MissingDependencies` rather than quietly fetching one. And `rust.resolve-deps` — the task whose whole job is to fetch — is refused on every host today, because the guest side of the microVM backend is unbuilt ([D24](decisions.md#d24-firecracker-is-the-default-backend-for-build-execution)).
+Build tasks are offline **by construction**, not by convention: no route out of the sandbox, `CARGO_NET_OFFLINE=true`, and `--frozen`. A missing crate fails with `MissingDependencies` rather than quietly fetching one. And `rust.resolve-deps` — the task whose whole job is to fetch — is refused on every host today, because the vsock egress bridge its profile needs is unbuilt; the task is refused at preflight rather than run without the egress it was promised ([D24](decisions.md#d24-firecracker-is-the-default-backend-for-build-execution)).
 
 So which case are you in?
 

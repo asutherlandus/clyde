@@ -114,7 +114,7 @@ The recorded backend comes from the selection rather than from an assumption, so
 
 ## 6. When it does not work
 
-Per-run files live in the sandbox runtime directory (`<state-dir>/run/sandboxes` by default):
+Per-run files live in the sandbox runtime directory (`<state-dir>/run/sandbox` by default):
 
 | File | What it holds |
 |---|---|
